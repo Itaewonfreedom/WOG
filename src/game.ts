@@ -60,6 +60,7 @@ export class Game {
   private resultTimer = -1;
   private resultWin = false;
   private helpTimer = 30;
+  private stepDist = 0;
   /** Automation: freeze the simulation but keep animating / rendering. */
   debugHold = false;
   debugCam: { pos: THREE.Vector3; look: THREE.Vector3; fov?: number } | null = null;
@@ -398,13 +399,24 @@ export class Game {
       if (f.hitFlash > 0 && v.flash < 0.3) v.flash = 1;
       v.flash = Math.max(0, v.flash - dt * 6);
       const broken = f.is('broken');
-      v.char.setFlash(broken ? 0.25 + Math.sin(this.time * 14) * 0.15 : v.flash * 0.7, broken ? 0xff2200 : v.flashColor);
+      const parry = !f.isPlayer && f.is('guard') && f.act.value === 1;
+      if (broken) v.char.setFlash(0.25 + Math.sin(this.time * 14) * 0.15, 0xff2200);
+      else if (parry && v.flash < 0.2) v.char.setFlash(0.14 + Math.sin(this.time * 9) * 0.08, 0x7fc4ff);
+      else v.char.setFlash(v.flash * 0.7, v.flashColor);
       v.char.setGlint(f.glint?.color ?? null, f.glint ? f.glint.t + alpha : 0);
       // Fire
       if (f.burning > 0 && simDt > 0 && Math.random() < 0.7) {
         this.embers.emit(V3(x, 0.4 + Math.random() * 1.2, z), 2, { color: Math.random() < 0.5 ? 0xff7a1a : 0xffc04a, speed: 0.6, size: 0.09, life: 0.6, gravity: -2, up: 1, jitter: 0.5 });
       }
       this.updateTrail(v, f, simDt);
+      // Soft footsteps for the ranger.
+      if (f.isPlayer && f.alive && simDt > 0 && f.speed > 1) {
+        this.stepDist += f.speed * simDt;
+        if (this.stepDist > (f.speed > 4 ? 1.1 : 0.8)) {
+          this.stepDist = 0;
+          this.play('footstep', undefined, 0.5, 0.9 + Math.random() * 0.2);
+        }
+      }
     }
     for (const [id, v] of this.views) {
       if (!alive.has(id)) {

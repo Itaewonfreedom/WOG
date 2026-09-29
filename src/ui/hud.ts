@@ -294,6 +294,7 @@ export class Hud {
         tag.weak.className = `weak ${wk}`;
         tag.weak.innerHTML = weak === 'slash' ? '약점 <b>斬</b> 베기' : weak === 'thrust' ? '약점 <b>突</b> 찌르기' : '';
       }
+      tag.root.classList.toggle('parry', f.is('guard') && f.act.value === 1);
       const fin = ps.finisherTarget === f.id;
       tag.fin.style.display = fin ? 'block' : 'none';
       if (fin) {

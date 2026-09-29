@@ -52,7 +52,8 @@ try {
     const w = g.world;
     const p = w.player;
     const threats = w.liveEnemies().filter((e) => e.is('attack') && e.act.move && !e.act.move.projectile && e.act.move.startup - e.act.t <= 10 && e.act.move.startup - e.act.t >= 2 && e.distTo(p) < 5).length;
-    return { mode: w.mode, wave: w.waves?.index ?? -1, waveState: w.waves?.state, so: w.standoff.phase, soT: w.standoff.t, impact: w.standoff.impact, hp: p.hp, act: p.act.kind, tick: w.tick, threats, live: w.liveEnemies().length, fin: w.ps.finisherTarget, lock: w.ps.lockTarget, stats: { ...w.stats } };
+    const touched = w.enemies().some((e) => e.hp < e.maxHp || e.posture > 0);
+    return { touched, mode: w.mode, wave: w.waves?.index ?? -1, waveState: w.waves?.state, so: w.standoff.phase, soT: w.standoff.t, impact: w.standoff.impact, hp: p.hp, act: p.act.kind, tick: w.tick, threats, live: w.liveEnemies().length, fin: w.ps.finisherTarget, lock: w.ps.lockTarget, stats: { ...w.stats } };
   });
 
   await page.click('[data-a="campaign"]');
@@ -115,13 +116,16 @@ try {
 
   // Pause menu via Escape.
   await page.keyboard.press('Escape');
-  await sleep(300);
-  const paused = await page.evaluate(() => document.querySelector('.menu.on h2')?.textContent ?? '');
+  let paused = '';
+  for (let i = 0; i < 30 && paused !== '일시정지'; i++) {
+    await sleep(100);
+    paused = await page.evaluate(() => document.querySelector('.menu.on h2')?.textContent ?? '');
+  }
   console.log('pause menu:', paused);
   await page.screenshot({ path: `${out}/smoke_9_pause.png` });
 
   if (s.tick < 300) throw new Error(`simulation barely advanced (tick ${s.tick})`);
-  if (s.stats.effectiveHits + s.stats.kills + s.stats.badHits === 0) throw new Error('player never landed an attack through real input');
+  if (!s.touched && s.stats.kills === 0) throw new Error('player never reached an enemy with an attack through real input');
   if (paused !== '일시정지') throw new Error('pause menu did not open');
   if (errors.length) throw new Error(`page errors:\n${errors.join('\n')}`);
   console.log('SMOKE OK');

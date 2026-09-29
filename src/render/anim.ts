@@ -382,6 +382,9 @@ export class Animator {
       case 'blockstun': {
         if (fam === 'ranger') {
           this.key({ hand: [-0.3, 1.02, 0.08], blade: [0.1, 0.7, 0.7], lhand: [0.1, 1.32, 0.42], lblade: [0.05, 0.08, 1], torso: 0.1, lean: 0.1, pelvisY: 0.86, step: 0.12 }, out);
+        } else if ((fam === 'katana' || fam === 'nodachi') && a.value === 1) {
+          // Parry stance (kasumi): blade level at the eyes, point aimed at the opponent.
+          this.key({ hand: [-0.16, 1.5, 0.3], blade: [0.3, 0.12, 1], edge: [0, 1, 0], torso: -0.25, lean: 0.08, pelvisY: 0.84, step: 0.25, head: 0.2 }, out);
         } else if (fam === 'katana' || fam === 'nodachi') {
           this.key({ hand: [-0.12, 1.32, 0.38], blade: [0.95, 0.35, 0.15], edge: [0, 1, 0], lean: -0.05, pelvisY: 0.86, step: 0.1 }, out);
         }

@@ -356,6 +356,10 @@ body.kurosawa.cine .letterbox {
 .enemy-tag.target .nm {
   color: var(--gold);
 }
+.enemy-tag.parry .nm::after {
+  content: ' · 튕기기 자세';
+  color: var(--blue);
+}
 @keyframes pulse {
   from {
     opacity: 0.55;
