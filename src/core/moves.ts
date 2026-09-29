@@ -49,43 +49,43 @@ const PLAYER: MoveDef[] = [
 // ─────────────────────────────────────────────────────────────────────────────
 const ENEMY: MoveDef[] = [
   // 낭인 검사 (katana)
-  mk({ id: 'ro_cut1', name: '내려베기', type: 'slash', startup: 17, active: 4, recovery: 24, damage: 12, posture: 18, shape: arc(2.5, 60), lunge: 1.4, trackUntil: 10, next: { slash: 'ro_cut2' } }),
-  mk({ id: 'ro_cut2', name: '되베기', type: 'slash', startup: 12, active: 4, recovery: 26, damage: 12, posture: 18, shape: arc(2.5, 70), lunge: 1.0, trackUntil: 6 }),
-  mk({ id: 'ro_lunge', name: '돌진 찌르기', type: 'thrust', startup: 30, active: 5, recovery: 32, damage: 20, posture: 25, shape: line(3.8, 0.7), lunge: 3.4, unblockable: 'blue', trackUntil: 20 }),
-  mk({ id: 'ro_feint', name: '허초', type: 'slash', startup: 14, active: 0, recovery: 10, damage: 0, posture: 0, shape: arc(0, 0), lunge: 0.4, feint: true }),
+  mk({ id: 'ro_cut1', name: '내려베기', type: 'slash', startup: 26, active: 4, recovery: 24, damage: 12, posture: 18, shape: arc(2.5, 60), lunge: 1.4, trackUntil: 16, next: { slash: 'ro_cut2' } }),
+  mk({ id: 'ro_cut2', name: '되베기', type: 'slash', startup: 18, active: 4, recovery: 26, damage: 12, posture: 18, shape: arc(2.5, 70), lunge: 1.0, trackUntil: 8 }),
+  mk({ id: 'ro_lunge', name: '돌진 찌르기', type: 'thrust', startup: 38, active: 5, recovery: 32, damage: 20, posture: 25, shape: line(3.8, 0.7), lunge: 3.4, unblockable: 'blue', trackUntil: 28 }),
+  mk({ id: 'ro_feint', name: '허초', type: 'slash', startup: 20, active: 0, recovery: 10, damage: 0, posture: 0, shape: arc(0, 0), lunge: 0.4, feint: true }),
 
   // 방패 무사
-  mk({ id: 'sh_stab', name: '방패 뒤 찌르기', type: 'thrust', startup: 15, active: 4, recovery: 22, damage: 11, posture: 16, shape: line(2.7, 0.6), lunge: 1.0, trackUntil: 9 }),
-  mk({ id: 'sh_charge', name: '방패 돌격', type: 'blunt', startup: 28, active: 7, recovery: 30, damage: 16, posture: 38, shape: line(2.3, 1.3), lunge: 3.6, unblockable: 'blue', trackUntil: 20, hyperArmor: true }),
+  mk({ id: 'sh_stab', name: '방패 뒤 찌르기', type: 'thrust', startup: 24, active: 4, recovery: 22, damage: 11, posture: 16, shape: line(2.7, 0.6), lunge: 1.0, trackUntil: 14 }),
+  mk({ id: 'sh_charge', name: '방패 돌격', type: 'blunt', startup: 36, active: 7, recovery: 30, damage: 16, posture: 38, shape: line(2.3, 1.3), lunge: 3.6, unblockable: 'blue', trackUntil: 26, hyperArmor: true }),
 
   // 창병 (yari)
-  mk({ id: 'sp_thrust', name: '창 찌르기', type: 'thrust', startup: 19, active: 4, recovery: 22, damage: 14, posture: 18, shape: line(4.3, 0.55), lunge: 0.8, trackUntil: 12, next: { slash: 'sp_thrust2' } }),
-  mk({ id: 'sp_thrust2', name: '창 연속 찌르기', type: 'thrust', startup: 11, active: 4, recovery: 26, damage: 12, posture: 16, shape: line(4.3, 0.55), lunge: 0.6, trackUntil: 6 }),
-  mk({ id: 'sp_sweep', name: '창 휩쓸기', type: 'slash', startup: 32, active: 6, recovery: 34, damage: 22, posture: 30, shape: arc(4.1, 110), lunge: 0.4, unblockable: 'red', trackUntil: 22 }),
+  mk({ id: 'sp_thrust', name: '창 찌르기', type: 'thrust', startup: 26, active: 4, recovery: 22, damage: 14, posture: 18, shape: line(4.3, 0.55), lunge: 0.8, trackUntil: 16, next: { slash: 'sp_thrust2' } }),
+  mk({ id: 'sp_thrust2', name: '창 연속 찌르기', type: 'thrust', startup: 18, active: 4, recovery: 26, damage: 12, posture: 16, shape: line(4.3, 0.55), lunge: 0.6, trackUntil: 8 }),
+  mk({ id: 'sp_sweep', name: '창 휩쓸기', type: 'slash', startup: 42, active: 6, recovery: 34, damage: 22, posture: 30, shape: arc(4.1, 110), lunge: 0.4, unblockable: 'red', trackUntil: 32 }),
 
   // 갑주 무사 (nodachi)
-  mk({ id: 'ar_cleave', name: '대도 내려치기', type: 'slash', startup: 26, active: 5, recovery: 34, damage: 24, posture: 40, shape: arc(3.0, 50), lunge: 1.4, hyperArmor: true, trackUntil: 16 }),
-  mk({ id: 'ar_sweep', name: '대도 휘두르기', type: 'slash', startup: 30, active: 7, recovery: 36, damage: 26, posture: 40, shape: arc(3.1, 120), lunge: 0.8, unblockable: 'blue', hyperArmor: true, trackUntil: 18 }),
-  mk({ id: 'ar_crush', name: '투구 깨기', type: 'slash', startup: 40, active: 6, recovery: 42, damage: 34, posture: 60, shape: arc(2.9, 45), lunge: 2.4, unblockable: 'red', hyperArmor: true, trackUntil: 26 }),
+  mk({ id: 'ar_cleave', name: '대도 내려치기', type: 'slash', startup: 32, active: 5, recovery: 34, damage: 24, posture: 40, shape: arc(3.0, 50), lunge: 1.4, hyperArmor: true, trackUntil: 22 }),
+  mk({ id: 'ar_sweep', name: '대도 휘두르기', type: 'slash', startup: 38, active: 7, recovery: 36, damage: 26, posture: 40, shape: arc(3.1, 120), lunge: 0.8, unblockable: 'blue', hyperArmor: true, trackUntil: 28 }),
+  mk({ id: 'ar_crush', name: '투구 깨기', type: 'slash', startup: 48, active: 6, recovery: 42, damage: 34, posture: 60, shape: arc(2.9, 45), lunge: 2.4, unblockable: 'red', hyperArmor: true, trackUntil: 38 }),
 
   // 쌍검 시노비
-  mk({ id: 'du_f1', name: '쌍검 연참', type: 'slash', startup: 11, active: 3, recovery: 12, damage: 8, posture: 10, shape: arc(2.1, 70), lunge: 1.4, trackUntil: 7, next: { slash: 'du_f2' } }),
-  mk({ id: 'du_f2', name: '쌍검 연참', type: 'slash', startup: 8, active: 3, recovery: 12, damage: 8, posture: 10, shape: arc(2.1, 70), lunge: 0.8, trackUntil: 4, next: { slash: 'du_f3' } }),
-  mk({ id: 'du_f3', name: '쌍검 연참', type: 'slash', startup: 9, active: 4, recovery: 24, damage: 10, posture: 12, shape: arc(2.2, 90), lunge: 0.8, trackUntil: 4 }),
-  mk({ id: 'du_leap', name: '도약 베기', type: 'slash', startup: 24, active: 5, recovery: 28, damage: 18, posture: 26, shape: arc(2.3, 70), lunge: 4.2, unblockable: 'blue', trackUntil: 16 }),
-  mk({ id: 'du_kunai', name: '쿠나이 투척', type: 'thrust', startup: 16, active: 1, recovery: 22, damage: 7, posture: 8, shape: line(0, 0), lunge: 0, projectile: 'kunai', trackUntil: 14 }),
+  mk({ id: 'du_f1', name: '쌍검 연참', type: 'slash', startup: 18, active: 3, recovery: 12, damage: 8, posture: 10, shape: arc(2.1, 70), lunge: 1.4, trackUntil: 8, next: { slash: 'du_f2' } }),
+  mk({ id: 'du_f2', name: '쌍검 연참', type: 'slash', startup: 13, active: 3, recovery: 12, damage: 8, posture: 10, shape: arc(2.1, 70), lunge: 0.8, trackUntil: 4, next: { slash: 'du_f3' } }),
+  mk({ id: 'du_f3', name: '쌍검 연참', type: 'slash', startup: 14, active: 4, recovery: 24, damage: 10, posture: 12, shape: arc(2.2, 90), lunge: 0.8, trackUntil: 4 }),
+  mk({ id: 'du_leap', name: '도약 베기', type: 'slash', startup: 32, active: 5, recovery: 28, damage: 18, posture: 26, shape: arc(2.3, 70), lunge: 4.2, unblockable: 'blue', trackUntil: 22 }),
+  mk({ id: 'du_kunai', name: '쿠나이 투척', type: 'thrust', startup: 22, active: 1, recovery: 22, damage: 7, posture: 8, shape: line(0, 0), lunge: 0, projectile: 'kunai', trackUntil: 12 }),
 
   // 궁수
-  mk({ id: 'ac_shot', name: '활 사격', type: 'thrust', startup: 44, active: 1, recovery: 26, damage: 14, posture: 14, shape: line(0, 0), lunge: 0, projectile: 'arrow', trackUntil: 36 }),
-  mk({ id: 'ac_knife', name: '단도 베기', type: 'slash', startup: 13, active: 3, recovery: 20, damage: 7, posture: 10, shape: arc(1.9, 70), lunge: 1.0, trackUntil: 8 }),
+  mk({ id: 'ac_shot', name: '활 사격', type: 'thrust', startup: 50, active: 1, recovery: 26, damage: 14, posture: 14, shape: line(0, 0), lunge: 0, projectile: 'arrow', trackUntil: 40 }),
+  mk({ id: 'ac_knife', name: '단도 베기', type: 'slash', startup: 20, active: 3, recovery: 20, damage: 7, posture: 10, shape: arc(1.9, 70), lunge: 1.0, trackUntil: 10 }),
 
   // 대장 (boss)
-  mk({ id: 'bo_c1', name: '연참', type: 'slash', startup: 13, active: 4, recovery: 16, damage: 14, posture: 20, shape: arc(2.7, 70), lunge: 1.6, trackUntil: 8, next: { slash: 'bo_c2' } }),
-  mk({ id: 'bo_c2', name: '연참', type: 'slash', startup: 10, active: 4, recovery: 16, damage: 14, posture: 20, shape: arc(2.7, 80), lunge: 1.2, trackUntil: 5, next: { slash: 'bo_c3' } }),
-  mk({ id: 'bo_c3', name: '연참 마무리', type: 'thrust', startup: 16, active: 4, recovery: 28, damage: 18, posture: 26, shape: line(3.4, 0.7), lunge: 2.0, trackUntil: 9, unblockable: 'blue' }),
-  mk({ id: 'bo_lunge', name: '섬광 찌르기', type: 'thrust', startup: 26, active: 5, recovery: 30, damage: 22, posture: 30, shape: line(4.2, 0.7), lunge: 3.8, unblockable: 'blue', trackUntil: 18 }),
-  mk({ id: 'bo_red', name: '귀신베기', type: 'slash', startup: 36, active: 6, recovery: 38, damage: 34, posture: 50, shape: arc(3.1, 85), lunge: 2.8, unblockable: 'red', hyperArmor: true, trackUntil: 24 }),
-  mk({ id: 'bo_feint', name: '허초', type: 'slash', startup: 16, active: 0, recovery: 8, damage: 0, posture: 0, shape: arc(0, 0), lunge: 0.6, feint: true }),
+  mk({ id: 'bo_c1', name: '연참', type: 'slash', startup: 20, active: 4, recovery: 16, damage: 14, posture: 20, shape: arc(2.7, 70), lunge: 1.6, trackUntil: 10, next: { slash: 'bo_c2' } }),
+  mk({ id: 'bo_c2', name: '연참', type: 'slash', startup: 15, active: 4, recovery: 16, damage: 14, posture: 20, shape: arc(2.7, 80), lunge: 1.2, trackUntil: 5, next: { slash: 'bo_c3' } }),
+  mk({ id: 'bo_c3', name: '연참 마무리', type: 'thrust', startup: 22, active: 4, recovery: 28, damage: 18, posture: 26, shape: line(3.4, 0.7), lunge: 2.0, trackUntil: 12, unblockable: 'blue' }),
+  mk({ id: 'bo_lunge', name: '섬광 찌르기', type: 'thrust', startup: 32, active: 5, recovery: 30, damage: 22, posture: 30, shape: line(4.2, 0.7), lunge: 3.8, unblockable: 'blue', trackUntil: 22 }),
+  mk({ id: 'bo_red', name: '귀신베기', type: 'slash', startup: 44, active: 6, recovery: 38, damage: 34, posture: 50, shape: arc(3.1, 85), lunge: 2.8, unblockable: 'red', hyperArmor: true, trackUntil: 34 }),
+  mk({ id: 'bo_feint', name: '허초', type: 'slash', startup: 20, active: 0, recovery: 8, damage: 0, posture: 0, shape: arc(0, 0), lunge: 0.6, feint: true }),
 
   // 수련용 허수아비 (no attacks)
 ];
