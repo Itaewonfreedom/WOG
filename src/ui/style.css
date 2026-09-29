@@ -754,6 +754,20 @@ body.cine .enemy-tag {
   pointer-events: none;
 }
 
+@media (max-width: 900px), (max-height: 500px) {
+  #tip {
+    top: 22vh;
+    max-width: min(300px, 60vw);
+    font-size: 12px;
+    padding: 8px 12px;
+  }
+  #tip b {
+    font-size: 18px;
+  }
+  #wave .t {
+    font-size: 40px;
+  }
+}
 @media (max-width: 720px) {
   #help {
     display: none;
@@ -775,4 +789,153 @@ body.cine .enemy-tag {
   .arrow-slot {
     min-width: 48px;
   }
+}
+
+/* ── Touch controls ──────────────────────────────────────────────── */
+.touch {
+  position: fixed;
+  inset: 0;
+  z-index: 4;
+  pointer-events: none;
+  display: none;
+  -webkit-tap-highlight-color: transparent;
+}
+body.touch-ui .touch {
+  display: block;
+}
+.t-zone {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  pointer-events: auto;
+  touch-action: none;
+}
+.t-zone.left {
+  left: 0;
+  width: 45%;
+}
+.t-zone.right {
+  right: 0;
+  width: 55%;
+}
+.t-stick {
+  position: absolute;
+  width: 112px;
+  height: 112px;
+  margin: -56px 0 0 -56px;
+  border-radius: 50%;
+  border: 2px solid var(--panel-line);
+  background: rgba(0, 0, 0, 0.25);
+  opacity: 0;
+  pointer-events: none;
+}
+.t-stick.on {
+  opacity: 1;
+}
+.t-knob {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 46px;
+  height: 46px;
+  margin: -23px 0 0 -23px;
+  border-radius: 50%;
+  background: var(--paper-dim);
+}
+.t-btns {
+  position: absolute;
+  right: calc(16px + env(safe-area-inset-right, 0px));
+  bottom: calc(18px + env(safe-area-inset-bottom, 0px));
+  display: grid;
+  grid-template-columns: repeat(3, 62px);
+  grid-template-rows: repeat(2, 62px);
+  gap: 10px;
+  pointer-events: none;
+}
+.t-b,
+.t-s {
+  pointer-events: auto;
+  touch-action: none;
+  border: 1.5px solid var(--panel-line);
+  background: rgba(12, 10, 9, 0.55);
+  color: var(--paper);
+  font-family: var(--kanji);
+  font-size: 22px;
+  border-radius: 50%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  line-height: 1;
+  user-select: none;
+}
+.t-b small {
+  font-family: var(--serif);
+  font-size: 10px;
+  opacity: 0.8;
+  margin-top: 3px;
+}
+.t-b.big {
+  border-color: var(--gold);
+  font-size: 26px;
+}
+.t-b.on,
+.t-s.on {
+  background: rgba(227, 180, 92, 0.45);
+}
+.t-b[data-b='slash'] {
+  grid-column: 2;
+  grid-row: 2;
+}
+.t-b[data-b='thrust'] {
+  grid-column: 3;
+  grid-row: 1;
+}
+.t-b[data-b='guard'] {
+  grid-column: 1;
+  grid-row: 2;
+}
+.t-b[data-b='dodge'] {
+  grid-column: 3;
+  grid-row: 2;
+}
+.t-b[data-b='aim'] {
+  grid-column: 2;
+  grid-row: 1;
+}
+.t-row {
+  position: absolute;
+  right: calc(16px + env(safe-area-inset-right, 0px));
+  top: calc(12px + env(safe-area-inset-top, 0px));
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 6px;
+  max-width: 70vw;
+}
+.t-s {
+  border-radius: 8px;
+  font-family: var(--serif);
+  font-size: 12px;
+  padding: 7px 10px;
+}
+body.touch-ui #help,
+body.touch-ui .click-hint {
+  display: none;
+}
+body.touch-ui .arrow-panel {
+  right: auto;
+  left: 16px;
+  bottom: auto;
+  top: calc(12px + env(safe-area-inset-top, 0px));
+  transform: scale(0.8);
+  transform-origin: top left;
+}
+body.touch-ui .player-panel {
+  left: 16px;
+  bottom: calc(16px + env(safe-area-inset-bottom, 0px));
+  width: min(240px, 40vw);
+}
+body.touch-ui #prompt {
+  bottom: 40vh;
 }

@@ -1,4 +1,5 @@
 import { BUTTONS, emptyInput, type Button, type InputFrame } from '../core/input';
+import type { TouchControls } from './touch';
 
 /** Keyboard + mouse bindings. */
 const KEYS: Partial<Record<Button, string[]>> = {
@@ -53,7 +54,9 @@ export class InputDevices {
   private prevPad = new Set<number>();
   readonly pausePressed = { v: false };
   locked = false;
-  lastDevice: 'kbm' | 'pad' = 'kbm';
+  private lockAttempted = false;
+  lastDevice: 'kbm' | 'pad' | 'touch' = 'kbm';
+  touch: TouchControls | null = null;
 
   constructor(private readonly el: HTMLElement) {
     window.addEventListener('keydown', (e) => {
@@ -71,13 +74,15 @@ export class InputDevices {
     });
     el.addEventListener('contextmenu', (e) => e.preventDefault());
     el.addEventListener('mousedown', (e) => {
-      if (!this.locked && document.pointerLockElement !== el) {
-        // First click only captures the mouse.
+      if (!this.locked && !this.lockAttempted && document.pointerLockElement !== el) {
+        // The first click only captures the mouse. If pointer lock is unavailable
+        // (e.g. a sandboxed iframe) later clicks still attack normally.
+        this.lockAttempted = true;
         try {
           const r = el.requestPointerLock?.() as unknown;
           if (r && typeof (r as Promise<void>).catch === 'function') (r as Promise<void>).catch(() => undefined);
         } catch {
-          /* pointer lock unavailable (e.g. sandboxed iframe) – mouse still works for buttons */
+          /* pointer lock unavailable */
         }
         if (e.button !== 0) this.addMouse(e.button);
         return;
@@ -103,7 +108,10 @@ export class InputDevices {
       { passive: true },
     );
     document.addEventListener('pointerlockchange', () => {
+      const was = this.locked;
       this.locked = document.pointerLockElement === el;
+      // Released with Esc: the next click re-captures instead of attacking.
+      if (was && !this.locked) this.lockAttempted = false;
     });
   }
 
@@ -166,6 +174,20 @@ export class InputDevices {
     }
     this.prevPad = padNow;
 
+    // Touch controls.
+    if (this.touch?.active) {
+      const t = this.touch.sample();
+      for (const b of BUTTONS) if (this.touch.held[b]) held[b] = true;
+      for (const b of t.taps) this.tapped.add(b);
+      if (t.mx || t.my) {
+        mx = t.mx;
+        mz = t.my;
+      }
+      lookDX += t.lookDX;
+      lookDY += t.lookDY;
+      if (t.mx || t.my || t.taps.size || t.lookDX) this.lastDevice = 'touch';
+    }
+
     // Camera-relative movement. Camera looks along (sin yaw, cos yaw); its right is (-cos, sin).
     const len = Math.hypot(mx, mz);
     if (len > 1) {
@@ -179,12 +201,7 @@ export class InputDevices {
     f.move = { x: fx * mz + rx * mx, z: fz * mz + rz * mx };
 
     if (this.wheelSteps !== 0) {
-      if (this.wheelSteps > 0) this.tapped.add('arrowNext');
-      else {
-        // Cycling backwards = two steps forward in a 3-cycle.
-        this.tapped.add('arrowNext');
-        f.pressed.arrowNext = true;
-      }
+      this.tapped.add('arrowNext');
       this.wheelSteps = 0;
     }
 

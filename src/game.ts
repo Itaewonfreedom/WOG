@@ -15,6 +15,7 @@ import { Animator } from './render/anim';
 import { CameraRig } from './render/camera';
 import { Decals, makeGlintTexture, Puffs, Rings, Sparks, SwordTrail } from './render/fx';
 import { InputDevices } from './input/devices';
+import { TouchControls } from './input/touch';
 import { Sfx, type SfxName } from './audio/sfx';
 import { Hud } from './ui/hud';
 import { DEFAULT_SETTINGS, Menus, type Settings } from './ui/menus';
@@ -63,6 +64,7 @@ export class Game {
   debugHold = false;
   debugCam: { pos: THREE.Vector3; look: THREE.Vector3; fov?: number } | null = null;
   private readonly clickHint: HTMLElement;
+  private readonly touch: TouchControls;
 
   constructor(container: HTMLElement) {
     this.settings = loadSettings();
@@ -75,6 +77,11 @@ export class Game {
     this.cam = new CameraRig(1);
     this.scene.add(this.sparks.mesh, this.embers.points, this.mist.points, this.rings.group, this.decals.mesh);
     this.devices = new InputDevices(this.renderer.domElement);
+    this.touch = new TouchControls(document.body, () => {
+      this.devices.lastDevice = 'touch';
+      this.hud.setHelpVisible(false);
+    });
+    this.devices.touch = this.touch;
     this.hud = new Hud(document.body);
     this.clickHint = document.createElement('div');
     this.clickHint.className = 'click-hint';
@@ -165,7 +172,7 @@ export class Game {
     this.hud.setHelpVisible(true);
     this.helpTimer = 30;
     this.sfx.startAmbience();
-    this.hud.showTip('튕기기', '적의 칼이 닿기 직전 방패(Shift)를 올려라. 파란 섬광은 튕기기로만, 빨간 섬광은 흘리기(Shift+Space)나 회피로 받아낸다.', 9);
+    this.hud.showTip('튕기기', '적의 칼이 닿기 직전 방패를 올려라. 파란 섬광은 튕기기로만, 빨간 섬광은 흘리기(방패+회피)나 회피로 받아낸다.', 9);
   }
 
   private resume(): void {
@@ -322,7 +329,8 @@ export class Game {
     }
     document.body.classList.toggle('cine', this.cam.inCinematic || w.mode === 'standoff');
     document.body.classList.toggle('title', this.state === 'title');
-    this.clickHint.style.display = this.state === 'play' && !this.devices.locked && this.devices.lastDevice === 'kbm' ? '' : 'none';
+    this.touch.setVisible(this.state === 'play');
+    this.clickHint.style.display = this.state === 'play' && !this.devices.locked && this.devices.lastDevice === 'kbm' && !this.touch.active ? '' : 'none';
 
     // Audio state
     this.sfx.setTimeScale(w.timeScale);
@@ -793,7 +801,9 @@ function loadSettings(): Settings {
   } catch {
     /* storage unavailable */
   }
-  return { ...DEFAULT_SETTINGS };
+  // Phones and tablets start on the lighter preset.
+  const coarse = typeof matchMedia === 'function' && matchMedia('(pointer: coarse)').matches;
+  return { ...DEFAULT_SETTINGS, quality: coarse || Math.min(window.innerWidth, window.innerHeight) < 600 ? 'low' : 'high' };
 }
 
 function saveSettings(s: Settings): void {

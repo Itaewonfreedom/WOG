@@ -26,6 +26,13 @@ function startGrain(canvas: HTMLCanvasElement): void {
   tick();
 }
 
-const app = document.getElementById('app')!;
-startGrain(document.getElementById('grain') as HTMLCanvasElement);
-new Game(app);
+function boot(): void {
+  const app = document.getElementById('app')!;
+  startGrain(document.getElementById('grain') as HTMLCanvasElement);
+  new Game(app);
+}
+
+// When hosted as a Claude artifact, boot through the viewer's hot-update hook if it exists.
+const hot = (window as unknown as { claude?: { hot?: { ready?: (fn: () => void) => void } } }).claude?.hot;
+if (hot?.ready) hot.ready(boot);
+else boot();

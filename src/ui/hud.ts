@@ -6,11 +6,12 @@ import { drawInfo } from '../core/bow';
 import { T } from '../core/tuning';
 import { defenseOf } from '../core/combat';
 
-type Device = 'kbm' | 'pad';
+type Device = 'kbm' | 'pad' | 'touch';
 
 const KEY_LABEL: Record<Device, Record<string, string>> = {
   kbm: { slash: '좌클릭/J', thrust: '우클릭/K', guard: 'Shift', dodge: 'Space', aim: 'Q', quick: 'E', heal: 'R', gale: 'F', standoff: 'T', lock: 'Tab' },
   pad: { slash: '□', thrust: '△', guard: 'L1', dodge: '○', aim: 'L2', quick: 'R1', heal: '↓', gale: '↑', standoff: '×', lock: 'R3' },
+  touch: { slash: '斬', thrust: '突', guard: '盾', dodge: '避', aim: '弓', quick: '속사', heal: '회복', gale: '질풍', standoff: '대치', lock: '락온' },
 };
 
 const ARROW_INFO = [

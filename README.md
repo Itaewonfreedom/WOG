@@ -10,7 +10,10 @@ npm run dev          # http://localhost:5173 에서 플레이
 npm test             # 전투 규칙 단위 테스트 (Vitest)
 npm run build        # 정적 빌드 → dist/
 npm run build:single # 단일 HTML 파일 → dist-single/index.html (공유용)
+npm run smoke        # 실제 키 입력으로 브라우저 스모크 테스트 (Playwright)
 ```
+
+키보드·마우스, 게임패드(표준 매핑), 휴대폰·태블릿 터치(가상 스틱 + 斬/突/盾/避/弓 버튼)를 모두 지원합니다.
 
 ## 핵심 시스템
 
