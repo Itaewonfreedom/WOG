@@ -4,6 +4,8 @@
 **숏소드(오른팔) + 초소형 버클러(왼팔) + 활**을 든 레인저에게 담은 3D 찬바라 전투 시스템입니다.
 브라우저에서 바로 돌아가는 플레이어블 데모(Three.js)와, 엔진에 독립적인 전투 코어(TypeScript)로 구성됩니다.
 
+**플레이:** https://itaewonfreedom.github.io/WOG/ (GitHub Pages — `gh-pages` 브랜치, 푸시할 때마다 자동 배포)
+
 ```bash
 npm install
 npm run dev          # http://localhost:5173 에서 플레이
