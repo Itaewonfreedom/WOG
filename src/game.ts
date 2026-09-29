@@ -393,6 +393,7 @@ export class Game {
       v.char.root.rotation.y = f.prevYaw + dy * alpha + pose.bodyYaw;
       v.char.root.scale.setScalar(f.size);
       v.char.applyPose(pose, f.speed, simDt);
+      if (f.phase === 2) v.char.shatterArmor();
       // Hit flash
       if (f.hitFlash > 0 && v.flash < 0.3) v.flash = 1;
       v.flash = Math.max(0, v.flash - dt * 6);

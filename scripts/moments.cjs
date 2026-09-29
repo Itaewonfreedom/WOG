@@ -39,6 +39,10 @@ const MOMENTS = {
   bow: `const S = __stage; const e = S.duel('ronin', 13); S.render(10, 0.05); const g = window.__game; const w = g.world; g.cam.yaw = 0; g.cam.pitch = 0.02; S.render(8, 0.05); const o = g.cam.camera.position; const d = { x: e.pos.x - o.x, y: 1.62 - o.y, z: e.pos.z - o.z }; const l = Math.hypot(d.x, d.y, d.z); const ex = { aimOrigin: { x: o.x, y: o.y, z: o.z }, aimDir: { x: d.x / l, y: d.y / l, z: d.z / l } }; S.step({ aim: true }, { aim: true }, {}, ex); S.run(3, { aim: true }, ex); S.step({ aim: true, slash: true }, { slash: true }, {}, ex); S.run(36, { aim: true, slash: true }, ex); S.render(10, 1/60);`,
   standoff: `const g = window.__game; g.start('campaign'); g.debugHold = true; document.querySelector('#help').classList.add('off'); const S = __stage; S.run(115); S.render(3, 0.05); S.step({}, { standoff: true }); S.step({ slash: true }, { slash: true }); for (let i = 0; i < 60; i++) { S.run(2, { slash: true }); S.render(1, 1/30); }`,
   wave4: `const g = window.__game; g.start('campaign'); g.debugHold = true; document.querySelector('#help').classList.add('off'); const w = g.world; w.waves.index = 2; w.waves.state = 'clear'; w.waves.timer = 999; const S = __stage; S.run(3); S.run(200); w.waves.engage(w); for (let i = 0; i < 40; i++) { S.run(6, { thrust: i % 3 === 0 }); S.render(1, 1/15); }`,
+  gale: `const S = __stage; const e = S.duel('ronin', 3.0); const w = window.__game.world; const e2 = w.spawn('spear', { x: 2.5, z: 4 }); e2.brain.aware = false; e2.brain.cooldown = 99999; w.ps.resolve = 3; S.render(20, 0.05); S.step({ slash: true, thrust: true }, { slash: true, thrust: true }); S.step({}, {}, { slash: true, thrust: true }); for (let i = 0; i < 12; i++) { S.run(2); S.render(1, 1/60); }`,
+  shatter: `const S = __stage; const e = S.duel('boss', 2.2); S.render(20, 0.05); e.hp = e.maxHp * 0.57; S.step({ thrust: true }, { thrust: true }); S.step({}, {}, { thrust: true }); S.run(10); S.render(8, 1/60);`,
+  roll: `const S = __stage; const e = S.duel('ronin', 4); S.render(20, 0.05); S.step({}, { dodge: true }, {}, { move: { x: 1, z: 0 } }); S.run(3, {}, { move: { x: 1, z: 0 } }); S.step({}, { dodge: true }, {}, { move: { x: 1, z: 0 } }); S.run(9, {}, { move: { x: 1, z: 0 } }); S.render(4, 1/60);`,
+  victory: `const g = window.__game; g.start('campaign'); const w = g.world; w.stats.kills = 14; w.stats.deflects = 23; w.stats.issens = 4; w.stats.maxIssenChain = 2; w.stats.finishers = 9; w.stats.time = 431; w.mode = 'victory'; w.emit({ type: 'victory' }); g.debugHold = true; for (let i = 0; i < 40; i++) g.frame(0.1);`,
   boss: `const S = __stage; const e = S.duel('boss', 2.6); S.render(20, 0.05); const s = S.attack(e, 'bo_red'); S.run(s - 8); S.render(6, 1/60);`,
 };
 
@@ -49,7 +53,7 @@ const MOMENTS = {
   const errors = [];
   page.on('pageerror', (e) => errors.push(e.message));
   page.on('console', (m) => { if (m.type() === 'error' && !m.text().includes('ERR_CERT')) errors.push(m.text()); });
-  await page.goto('http://localhost:5173/', { waitUntil: 'load' });
+  await page.goto(process.env.WOG_URL || 'http://localhost:5173/', { waitUntil: 'load' });
   await page.waitForTimeout(1200);
   await page.evaluate(STAGE);
   for (const [name, code] of Object.entries(MOMENTS)) {

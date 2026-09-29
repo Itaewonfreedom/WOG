@@ -301,6 +301,7 @@ export class CharacterView {
   private readonly nocked: THREE.Mesh | null = null;
   readonly glintSprite: THREE.Sprite;
   shieldOpen = 0;
+  private armorBroken = false;
   /** Cape swing state. */
   private capeLift = 0;
 
@@ -496,6 +497,7 @@ export class CharacterView {
           const crescent = add(new THREE.TorusGeometry(0.2, 0.014, 6, 24, Math.PI), gold, 0, 0.14, 0.1);
           crescent.rotation.z = Math.PI;
           crescent.position.y = 0.3;
+          crescent.name = 'armor';
         } else {
           for (const s of [-1, 1]) {
             const horn = add(new THREE.BoxGeometry(0.02, 0.22, 0.012), gold, s * 0.07, 0.2, 0.1);
@@ -703,6 +705,19 @@ export class CharacterView {
     obj.updateWorldMatrix(true, false);
     base.set(0, offhand ? this.offBase : this.weaponBase, 0).applyMatrix4(obj.matrixWorld);
     tip.set(0, offhand ? this.offTip : this.weaponTip, 0).applyMatrix4(obj.matrixWorld);
+  }
+
+  /** Boss phase 2: plates and crest fall away, leaving the dark under-robe. */
+  shatterArmor(): void {
+    if (this.armorBroken) return;
+    this.armorBroken = true;
+    if (this.chestPlate) this.chestPlate.visible = false;
+    for (const p of this.shoulderPads) p.visible = false;
+    this.head.traverse((o) => {
+      if (o.name === 'armor') o.visible = false;
+    });
+    (this.torso.material as THREE.MeshStandardMaterial).color.setHex(this.look.cloth2);
+    if (this.skirt) (this.skirt.material as THREE.MeshStandardMaterial).color.setHex(0x2a1416);
   }
 
   setFlash(v: number, color = 0xffffff): void {
