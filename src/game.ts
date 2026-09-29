@@ -61,6 +61,8 @@ export class Game {
   private resultWin = false;
   private helpTimer = 30;
   private stepDist = 0;
+  /** Contextual one-time lessons, shown the first time a situation comes up. */
+  private readonly lessons = new Set<string>();
   /** Automation: freeze the simulation but keep animating / rendering. */
   debugHold = false;
   debugCam: { pos: THREE.Vector3; look: THREE.Vector3; fov?: number } | null = null;
@@ -545,7 +547,44 @@ export class Game {
     if (big || Math.random() < 0.35) this.decals.add(at.x + (dir?.x ?? 0) * 0.8, at.z + (dir?.z ?? 0) * 0.8, big ? 1.5 : 0.7 + Math.random() * 0.5);
   }
 
+  private lesson(key: string, title: string, body: string): void {
+    if (this.lessons.has(key) || this.state !== 'play') return;
+    this.lessons.add(key);
+    this.hud.showTip(title, body, 8);
+  }
+
+  private teach(ev: CombatEvent): void {
+    const pid = this.world.player.id;
+    switch (ev.type) {
+      case 'glint':
+        if (ev.color === 'blue') this.lesson('blue', '파란 섬광', '막을 수 없는 공격. 칼이 닿기 직전 방패를 눌러 튕겨내라.');
+        else this.lesson('red', '빨간 섬광', '막을 수도 튕길 수도 없다. 방패를 든 채 회피 = 흘리기, 또는 옆으로 회피.');
+        break;
+      case 'deflect':
+        if (ev.defender === pid && !ev.arrow) this.lesson('hajiki', '튕기기 일섬', '튕겨낸 직후 곧바로 공격하면 반동에 빠진 적을 일격에 벤다.');
+        else if (ev.defender !== pid) this.lesson('parry', '적의 튕기기', '튕기기 자세의 적에게 가벼운 공격은 튕겨난다. 길게 눌러 강공격하거나 방패 치기로 깨라.');
+        break;
+      case 'postureBreak':
+        this.lesson('finisher', '피니쉬', '무너진 적 앞에서 베기 = 일도양단, 찌르기 = 심장 관통. 약점 버튼으로 마무리하면 결의를 더 얻는다.');
+        break;
+      case 'flow':
+        this.lesson('flow', '흘려베기', '흘려낸 적은 등을 드러낸다. 바로 공격하라.');
+        break;
+      case 'bounce':
+      case 'haft':
+      case 'evade':
+        this.lesson('matchup', '상성', '적 머리 위의 약점 표시를 보라. 방패·갑주엔 찌르기, 창·쌍검엔 베기.');
+        break;
+      case 'resolve':
+        if (ev.total >= 2) this.lesson('gale', '결의', '결의 2칸: 베기+찌르기 동시(질풍참)로 여럿을 한 번에 무너뜨린다. 1칸: 회복.');
+        break;
+      default:
+        break;
+    }
+  }
+
   private onEvent(ev: CombatEvent): void {
+    this.teach(ev);
     const w = this.world;
     const pid = w.player.id;
     const pos2 = (p: { x: number; z: number }, y = 1.25) => V3(p.x, y, p.z);
