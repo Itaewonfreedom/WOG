@@ -24,9 +24,13 @@ export function updatePlayer(w: World, inp: InputFrame): void {
   const buf = w.buffer;
   const tick = w.tick;
 
-  if (inp.pressed.slash || inp.pressed.thrust) {
-    ps.prevAttackPressTick = ps.attackPressTick;
-    ps.attackPressTick = tick;
+  {
+    // Derived from the buffer so presses made during hit-stop still count.
+    const pt = (b: 'slash' | 'thrust') => buf.pressTick.get(b) ?? -9999;
+    const pv = (b: 'slash' | 'thrust') => buf.prevPressTick.get(b) ?? -9999;
+    const ticks = [pt('slash'), pt('thrust'), pv('slash'), pv('thrust')].sort((a, b) => b - a);
+    ps.attackPressTick = ticks[0];
+    ps.prevAttackPressTick = ticks[1];
   }
   if (inp.pressed.arrow1) ps.arrowType = 'standard';
   if (inp.pressed.arrow2) ps.arrowType = 'heavy';
@@ -69,18 +73,22 @@ export function updatePlayer(w: World, inp: InputFrame): void {
       if (inp.held.aim) return enterAim(w, p);
       if (buf.consume('quickshot', tick, B) && tryQuickshot(w, p)) return;
       if (buf.consume('dodge', tick, B)) return startDodge(w, p, inp);
-      if (inp.held.guard) return enterGuard(w, p, inp.pressed.guard || buf.consume('guard', tick, B));
+      if (inp.held.guard) return raiseGuard(w, p, takeGuardPress(w));
       if (buf.peek('slash', tick, B) || buf.peek('thrust', tick, B)) return startOpener(w, p, inp);
       locomotion(w, p, inp, T.runSpeed);
       return;
 
     case 'guard': {
-      if (inp.pressed.guard) {
-        ps.prevGuardStartTick = ps.guardStartTick;
-        ps.guardStartTick = tick;
+      {
+        const g = takeGuardPress(w);
+        if (g !== null) {
+          ps.prevGuardStartTick = ps.guardStartTick;
+          ps.guardStartTick = g;
+        }
       }
       if (tryFinisherOrCounter(w, p)) return;
-      if (!inp.held.guard) {
+      // A tapped guard stays up for the whole deflect window (tap-to-deflect).
+      if (!inp.held.guard && tick - ps.guardStartTick > w.win(T.deflectWindow)) {
         p.set('free', Infinity);
         locomotion(w, p, inp, T.runSpeed);
         return;
@@ -99,21 +107,18 @@ export function updatePlayer(w: World, inp: InputFrame): void {
     case 'deflect':
       // Right after a deflect: attack → 튕기기 일섬, guard re-press → chain deflects.
       if (tryFinisherOrCounter(w, p)) return;
-      if (inp.pressed.guard) {
-        ps.prevGuardStartTick = ps.guardStartTick;
-        ps.guardStartTick = tick;
-        p.set('guard', Infinity);
-        return;
+      {
+        const g = takeGuardPress(w);
+        if (g !== null) return raiseGuard(w, p, g);
       }
       if (a.t >= 6 && buf.consume('dodge', tick, B)) return startDodge(w, p, inp);
       if (a.t >= 8 && (buf.peek('slash', tick, B) || buf.peek('thrust', tick, B))) return startOpener(w, p, inp);
       return;
 
     case 'blockstun':
-      if (inp.pressed.guard) {
-        ps.prevGuardStartTick = ps.guardStartTick;
-        ps.guardStartTick = tick;
-        p.set('guard', Infinity);
+      {
+        const g = takeGuardPress(w);
+        if (g !== null) return raiseGuard(w, p, g);
       }
       return;
 
@@ -125,10 +130,9 @@ export function updatePlayer(w: World, inp: InputFrame): void {
     case 'flowStep':
       if (a.t > w.win(T.flowWindow) + 4) {
         if (buf.peek('slash', tick, B) || buf.peek('thrust', tick, B)) return startOpener(w, p, inp);
-        if (inp.pressed.guard) {
-          ps.prevGuardStartTick = ps.guardStartTick;
-          ps.guardStartTick = tick;
-          p.set('guard', Infinity);
+        {
+          const g = takeGuardPress(w);
+          if (g !== null) return raiseGuard(w, p, g);
         }
       }
       return;
@@ -160,7 +164,7 @@ export function updatePlayer(w: World, inp: InputFrame): void {
         if (tryFinisherOrCounter(w, p)) return;
         if (inp.held.aim) return enterAim(w, p);
         if (buf.peek('slash', tick, B) || buf.peek('thrust', tick, B)) return startOpener(w, p, inp);
-        if (inp.held.guard && inp.pressed.guard) return enterGuard(w, p, true);
+        if (inp.held.guard && buf.peek('guard', tick, B)) return raiseGuard(w, p, takeGuardPress(w));
       }
       return;
 
@@ -193,14 +197,14 @@ export function updatePlayer(w: World, inp: InputFrame): void {
       if (a.t >= a.dur - 12) {
         if (tryFinisherOrCounter(w, p)) return;
         if (buf.consume('dodge', tick, B)) return startDodge(w, p, inp);
-        if (inp.pressed.guard) return enterGuard(w, p, true);
+        if (buf.peek('guard', tick, B)) return raiseGuard(w, p, takeGuardPress(w));
       }
       return;
 
     case 'recoil':
       // Knocked-away blade: recover in time to deflect or dodge the counter.
       if (a.t >= 12) {
-        if (inp.pressed.guard || (inp.held.guard && buf.consume('guard', tick, B))) return enterGuard(w, p, true);
+        if (buf.peek('guard', tick, B)) return raiseGuard(w, p, takeGuardPress(w));
         if (buf.consume('dodge', tick, B)) return startDodge(w, p, inp);
       }
       return;
@@ -286,7 +290,9 @@ function tryFinisherOrCounter(w: World, p: Fighter): boolean {
 
 function tryGale(w: World, p: Fighter, inp: InputFrame): boolean {
   const ps = w.ps;
-  const both = Math.abs((w.buffer.pressTick.get('slash') ?? -99) - (w.buffer.pressTick.get('thrust') ?? -999)) <= 3 && w.buffer.peek('slash', w.tick, 4) && w.buffer.peek('thrust', w.tick, 4);
+  const ps0 = w.buffer.pressTick.get('slash') ?? -99;
+  const pt0 = w.buffer.pressTick.get('thrust') ?? -999;
+  const both = Math.abs(ps0 - pt0) <= 3 && w.tick - Math.max(ps0, pt0) <= 4;
   if (!(inp.pressed.gale || both)) return false;
   if (ps.resolve < T.galeCost) {
     if (inp.pressed.gale) w.emit({ type: 'text', text: '결의 부족', style: 'bad', id: p.id });
@@ -357,6 +363,9 @@ function updateAttack(w: World, p: Fighter, inp: InputFrame): void {
   const tick = w.tick;
   const B = T.inputBuffer;
 
+  // Slash and thrust pressed a few ticks apart: the opener turns into 질풍참.
+  if (a.opener && a.t <= 4 && tryGale(w, p, inp)) return;
+
   // Keep holding after the light hit → wind up a charged heavy strike.
   if (a.button && !m.heavy && m.id !== 'r_bash' && a.t === m.startup + m.active + T.chargeCheck && inp.held[a.button] && !buf.peek(a.button, tick, B)) {
     p.set('charge', Infinity, { button: a.button, targetId: a.targetId });
@@ -385,19 +394,24 @@ function updateAttack(w: World, p: Fighter, inp: InputFrame): void {
   }
   if (a.t >= m.cancelFrom) {
     if (buf.consume('dodge', tick, B)) return startDodge(w, p, inp);
-    if (inp.pressed.guard || (buf.peek('guard', tick, B) && inp.held.guard)) {
-      buf.consume('guard', tick, B);
-      return enterGuard(w, p, true);
-    }
+    if (buf.peek('guard', tick, B) && inp.held.guard) return raiseGuard(w, p, takeGuardPress(w));
     if (inp.held.aim) return enterAim(w, p);
     if (buf.consume('quickshot', tick, B) && tryQuickshot(w, p)) return;
   }
 }
 
-function enterGuard(w: World, p: Fighter, fresh: boolean): void {
+/** Consume a buffered guard press; returns the tick it was pressed (deflect timing counts from the press). */
+function takeGuardPress(w: World): number | null {
+  const t = w.buffer.pressTick.get('guard');
+  if (t === undefined || !w.buffer.consume('guard', w.tick, T.inputBuffer)) return null;
+  return t;
+}
+
+/** Raise the buckler. A fresh press opens the deflect window; merely holding guard does not. */
+function raiseGuard(w: World, p: Fighter, pressTick: number | null): void {
   const ps = w.ps;
   ps.prevGuardStartTick = ps.guardStartTick;
-  ps.guardStartTick = fresh ? w.tick : -9999;
+  ps.guardStartTick = pressTick ?? -9999;
   p.set('guard', Infinity);
 }
 

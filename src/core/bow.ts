@@ -242,7 +242,7 @@ function resolveOnPlayerProjectile(w: World, pr: Projectile, p: Fighter, pt: Vec
   const from = { x: p.pos.x - pr.vel.x, z: p.pos.z - pr.vel.z };
   const frontal = p.angleTo(from) <= T.guardArc;
   const owner = w.get(pr.ownerId) ?? p;
-  if (p.is('guard', 'deflect') && frontal) {
+  if (p.is('guard', 'deflect', 'blockstun') && frontal) {
     pr.alive = false;
     if (deflectReady(w, p)) {
       w.stats.deflects++;

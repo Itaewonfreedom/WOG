@@ -32,6 +32,21 @@ function playerCinematic(w: World): boolean {
   return w.player.is('finisher', 'issen', 'gale');
 }
 
+/**
+ * May this enemy start a melee attack right now? Every attack path (director, counters,
+ * breakouts) goes through here so no more than `maxAttackers` ever swing at once.
+ */
+export function canCommit(w: World, e: Fighter): boolean {
+  if (playerCinematic(w)) return false;
+  if (e.arch?.ai.ranged || e.brain?.token) return true;
+  const melee = w.fighters.filter((f) => f !== e && f.team === 'enemy' && f.targetable && f.brain && !f.arch!.ai.ranged);
+  const max = melee.some((f) => f.arch!.isBoss) || e.arch?.isBoss ? 1 : T.maxAttackers;
+  const busy = melee.filter((f) => f.brain!.token || (f.is('attack') && !f.act.move?.feint)).length;
+  if (busy >= max) return false;
+  e.brain!.token = true;
+  return true;
+}
+
 export function updateAI(w: World): void {
   const p = w.player;
   const enemies = w.fighters.filter((f) => f.team === 'enemy' && f.targetable && f.brain);
@@ -115,7 +130,7 @@ function think(w: World, e: Fighter): void {
       e.vel = scale(rightOf(e.yaw), b.strafeDir * speed * 0.25);
       if (--b.guardTimer <= 0) e.set('free', Infinity);
       // Counter out of guard once the player's attack is spent.
-      else if (b.counter && (p.is('recoil') || p.attackPhase === 'recovery') && gap < 2.8 && !playerCinematic(w)) {
+      else if (b.counter && (p.is('recoil') || p.attackPhase === 'recovery') && gap < 2.8 && canCommit(w, e)) {
         b.counter = false;
         const m = pickMove(w, e, gap, false);
         if (m) startEnemyAttack(w, e, m);
@@ -178,7 +193,12 @@ function think(w: World, e: Fighter): void {
       b.plan = m?.id ?? null;
     }
     const plan = b.plan ? getMove(b.plan) : null;
-    if (plan) {
+    if (plan?.projectile) {
+      // Thrown weapons fire from their own range band instead of walking into melee.
+      const c = arch.moves.find((m) => m.move === plan.id)!;
+      b.plan = null;
+      if (gap >= c.minRange - 0.5 && gap <= c.maxRange) return startEnemyAttack(w, e, plan);
+    } else if (plan) {
       const reach = plan.shape.kind === 'line' ? plan.shape.range : plan.shape.range;
       const want = Math.max(0.3, reach * 0.8 + (plan.lunge > 2 ? plan.lunge * 0.6 : 0));
       if (gap <= want) {
@@ -227,15 +247,12 @@ function breakOut(w: World, e: Fighter, gap: number): void {
     case 'backstep': {
       const away = norm(sub(e.pos, p.pos));
       e.set('evade', 20, { from: { ...e.pos }, to: add(e.pos, scale(away, 2.2)), travel: 12, side: 1 });
-      b.counter = true;
-      b.token = true;
+      // Counter only if an attack slot is free.
+      b.counter = canCommit(w, e);
       return;
     }
     case 'bash':
-      if (gap < 4.5) {
-        b.token = true;
-        startEnemyAttack(w, e, getMove('sh_charge'));
-      }
+      if (gap < 4.5 && canCommit(w, e)) startEnemyAttack(w, e, getMove('sh_charge'));
       return;
     default:
       return;
@@ -247,7 +264,7 @@ function rangedThink(w: World, e: Fighter, gap: number, speed: number): void {
   const p = w.player;
   const arch = e.arch!;
   const toP = norm(sub(p.pos, e.pos));
-  if (gap < 2.0 && b.cooldown <= 0) {
+  if (gap < 2.0 && b.cooldown <= 0 && !playerCinematic(w)) {
     b.cooldown = Math.round(w.rng.range(arch.ai.cooldown[0], arch.ai.cooldown[1]));
     return startEnemyAttack(w, e, getMove('ac_knife'));
   }

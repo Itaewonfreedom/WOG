@@ -195,9 +195,10 @@ export function playerInvulnerable(w: World, p: Fighter): boolean {
 
 /** Is the player's buckler currently able to deflect? */
 export function deflectReady(w: World, p: Fighter): boolean {
-  if (!p.is('guard', 'deflect')) return false;
+  if (!p.is('guard', 'deflect', 'blockstun')) return false;
   const ps = w.ps;
-  const spam = ps.guardStartTick - ps.prevGuardStartTick < T.deflectSpamGap;
+  // Re-pressing right after a successful deflect (chain deflects) is not spam.
+  const spam = ps.guardStartTick - ps.prevGuardStartTick < T.deflectSpamGap && ps.lastDeflectTick < ps.prevGuardStartTick;
   const window = w.win(spam ? T.deflectSpamWindow : T.deflectWindow);
   return w.tick - ps.guardStartTick <= window;
 }
@@ -209,8 +210,9 @@ export function tryPerfectDodge(w: World, att: Fighter, p: Fighter): void {
   if (a.kind !== 'dodge') return;
   const i0 = a.value === 1 ? T.rollIFrames[0] : T.dodgeIFrames[0];
   const dodgeId = w.tick - a.t;
-  if (a.t < i0 || a.t - i0 > T.perfectDodgeFrames || ps.perfectDodgeTick === dodgeId) return;
+  if (a.t < i0 || a.t - i0 > T.perfectDodgeFrames || ps.perfectDodgeTick === dodgeId || w.tick - ps.lastPerfectDodgeTick < 30) return;
   ps.perfectDodgeTick = dodgeId;
+  ps.lastPerfectDodgeTick = w.tick;
   ps.dodgeCounterUntil = w.tick + T.dodgeCounterWindow;
   w.stats.perfectDodges++;
   w.gainResolve(T.resolveGain.perfectDodge);
@@ -225,7 +227,7 @@ export function canIssen(w: World, p: Fighter, att: Fighter): boolean {
   const ps = w.ps;
   const chain = w.tick <= ps.issenChainUntil;
   const window = w.win(chain ? T.issenChainWindow : T.issenWindow);
-  if (a.t > window || a.t >= a.move.startup) return false;
+  if (a.t > window || a.t >= a.move.startup + a.move.active) return false;
   if (!chain && ps.attackPressTick - ps.prevAttackPressTick < T.issenMashLockout) return false;
   return p.angleTo(att.pos) <= Math.PI * 0.6;
 }
@@ -250,7 +252,7 @@ export function resolveOnPlayer(w: World, att: Fighter, p: Fighter, m: MoveDef):
 
   const ub = m.unblockable ?? 'none';
   const frontal = p.angleTo(att.pos) <= T.guardArc;
-  if (p.is('guard', 'deflect') && frontal) {
+  if (p.is('guard', 'deflect', 'blockstun') && frontal) {
     if (ub !== 'red' && deflectReady(w, p)) {
       doDeflect(w, p, att);
       return;
@@ -320,6 +322,7 @@ export function doDeflect(w: World, p: Fighter, att: Fighter): void {
   ps.hajikiUntil = w.tick + w.win(T.hajikiIssenWindow);
   ps.riposteTarget = att.id;
   ps.riposteUntil = w.tick + T.riposteWindow;
+  ps.lastDeflectTick = w.tick;
   w.stats.deflects++;
   w.gainResolve(T.resolveGain.deflect);
   w.freeze(HITSTOP.deflect);
@@ -402,7 +405,8 @@ export function resolveOnEnemy(w: World, p: Fighter, e: Fighter, m: MoveDef): vo
   if (soft && e.defenseless) rule = NORMAL;
 
   if (rule.result === 'evade') {
-    const committed = e.attacking || e.is('hitstun', 'stagger', 'blockstun', 'finished');
+    // Mid-string (including its recovery) a duelist can't twist away: punish the end of the string.
+    const committed = e.is('attack', 'hitstun', 'stagger', 'blockstun', 'finished');
     if (committed) rule = NORMAL;
     else return doEvade(w, e, p);
   }
@@ -487,7 +491,8 @@ export function applyHitToEnemy(w: World, p: Fighter, e: Fighter, dmg: number, p
   }
   if (!e.is('broken', 'overextended')) {
     const armored = !!e.arch?.heavyBody || (e.attacking && !!e.act.move?.hyperArmor);
-    if (o.interrupt && e.attackPhase === 'startup') {
+    // The buckler bash cuts through armor; arrows only flinch the unarmored.
+    if (o.interrupt && e.attackPhase === 'startup' && !(o.arrow && armored)) {
       e.set('hitstun', T.hitstun);
       w.pushBack(e, away, 0.5);
     } else if (o.result === 'glance' || armored) {
@@ -528,7 +533,6 @@ function enemyParry(w: World, p: Fighter, e: Fighter): void {
   e.set('guard', 16, { value: 0 });
   if (e.brain) {
     e.brain.counter = true;
-    e.brain.token = true;
     e.brain.guardTimer = 16;
   }
   w.stats.badHits++;
@@ -564,6 +568,13 @@ function doHaft(w: World, p: Fighter, e: Fighter, m: MoveDef, rule: DefenseRule)
   p.set('recoil', 14);
   w.pushBack(p, sub(p.pos, e.pos), 0.8);
   e.hp -= m.damage * rule.dmgMul;
+  if (e.hp <= 0) {
+    e.hp = 0;
+    e.set('dead', Infinity);
+    e.deathKind = m.type;
+    killBookkeeping(w, e, m.type);
+    return;
+  }
   const broke = e.addPosture(m.posture * rule.postureMul);
   if (broke) breakPosture(w, e);
   w.stats.badHits++;
@@ -653,7 +664,9 @@ export function startFinisher(w: World, p: Fighter, e: Fighter, kind: 'slash' | 
 
 export function applyFinisherImpact(w: World, p: Fighter, e: Fighter, kind: FinisherKind): void {
   const weakness = e.arch?.weakness === kind;
-  if (e.arch?.isBoss) {
+  if (e.hp <= 0) {
+    // Already dead (e.g. burned out mid-finisher): no second kill.
+  } else if (e.arch?.isBoss) {
     e.hp = Math.max(0, e.hp - e.maxHp * T.bossFinisherFrac * (weakness ? 1.2 : 1));
     e.posture = 0;
     if (e.hp <= 0) {

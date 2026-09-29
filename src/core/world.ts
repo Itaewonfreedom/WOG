@@ -4,7 +4,7 @@ import { emptyInput, InputBuffer, type Button, type InputFrame } from './input';
 import { add, clamp, dist, fromYaw, len, norm, Rng, scale, sub, turnToward, type Vec2 } from './math';
 import { DT, T } from './tuning';
 import type { ArchetypeId, ArrowType, CombatEvent, Projectile } from './types';
-import { stepAttack, stepGale, stepScripted } from './combat';
+import { killBookkeeping, stepAttack, stepGale, stepScripted } from './combat';
 import { updatePlayer } from './player';
 import { updateAI, makeBrain } from './ai';
 import { stepProjectiles } from './bow';
@@ -47,6 +47,9 @@ export interface PlayerState {
   comboTimer: number;
   /** Id of the dodge instance that already produced a perfect dodge. */
   perfectDodgeTick: number;
+  lastPerfectDodgeTick: number;
+  /** Tick of the last successful deflect (chain deflects are exempt from the spam penalty). */
+  lastDeflectTick: number;
 }
 
 export interface WorldSettings {
@@ -142,6 +145,8 @@ export class World {
       combo: 0,
       comboTimer: 0,
       perfectDodgeTick: -1,
+      lastPerfectDodgeTick: -9999,
+      lastDeflectTick: -9999,
     };
     this.standoff = new Standoff();
   }
@@ -273,6 +278,7 @@ export class World {
     for (const f of this.fighters) this.stepFighter(f);
     // Pass 2: active hit windows (player first → player wins trades).
     for (const f of this.fighters) {
+      if (!f.alive) continue;
       if (f.act.kind === 'attack') stepAttack(this, f);
       else if (f.act.kind === 'gale') stepGale(this, f);
     }
@@ -294,7 +300,7 @@ export class World {
       f.pos = add(f.pos, scale(f.kb, DT));
       return;
     }
-    if (f.burning > 0) {
+    if (f.burning > 0 && !f.is('finished')) {
       f.burning--;
       if (f.burning % 20 === 0) {
         f.hp -= T.burnDps / 3;
@@ -303,8 +309,7 @@ export class World {
           f.hp = 0;
           f.set('dead', Infinity);
           f.deathKind = 'burn';
-          this.stats.kills++;
-          this.emit({ type: 'kill', victim: f.id, killer: this.player.id, cause: 'burn' });
+          killBookkeeping(this, f, 'burn');
           return;
         }
       }
@@ -364,9 +369,12 @@ export class World {
     if (f.isPlayer) {
       if (this.input.held.aim) f.set('aim', Infinity);
       else if (this.input.held.guard) {
+        // A press made during the stun still counts as fresh (deflect-capable).
+        const pt = this.buffer.pressTick.get('guard') ?? -9999;
+        const fresh = this.buffer.consume('guard', this.tick, T.inputBuffer);
         f.set('guard', Infinity);
         this.ps.prevGuardStartTick = this.ps.guardStartTick;
-        this.ps.guardStartTick = -9999;
+        this.ps.guardStartTick = fresh ? pt : -9999;
       }
     }
   }

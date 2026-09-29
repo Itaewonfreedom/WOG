@@ -25,6 +25,8 @@ export class Standoff {
   held = false;
   everHeld = false;
   kills = 0;
+  /** Enemies already struck in this standoff (a surviving boss can't be struck twice). */
+  private readonly struck = new Set<number>();
   /** Tick (in strike phase) when the charging enemy arrives. */
   readonly impact = STRIKE_TRAVEL;
 
@@ -42,6 +44,7 @@ export class Standoff {
     this.phase = 'approach';
     this.t = 0;
     this.kills = 0;
+    this.struck.clear();
     this.held = false;
     this.everHeld = false;
     w.mode = 'standoff';
@@ -114,7 +117,7 @@ export class Standoff {
         return;
       }
       case 'punish': {
-        if (this.t === this.impact && L) {
+        if (this.t >= this.impact && L) {
           this.end(w);
           damagePlayer(w, L, p, T.standoffFailDamage, true);
         }
@@ -125,7 +128,7 @@ export class Standoff {
         if (this.kills >= T.standoffChainMax) return this.end(w);
         const next = w
           .liveEnemies()
-          .filter((e) => !e.arch?.ai.ranged && e.distTo(p) < 14)
+          .filter((e) => !e.arch?.ai.ranged && !e.arch?.isBoss && !this.struck.has(e.id) && e.distTo(p) < 14)
           .sort((a, b) => a.distTo(p) - b.distTo(p))[0];
         if (!next) return this.end(w);
         this.leaderId = next.id;
@@ -154,6 +157,9 @@ export class Standoff {
     const p = w.player;
     doIssen(w, p, e, false, true);
     this.kills++;
+    this.struck.add(e.id);
+    // A boss survives the cut: the duel proper begins.
+    if (e.arch?.isBoss) this.kills = T.standoffChainMax;
     this.phase = 'between';
     this.t = 0;
     w.emit({ type: 'standoff', phase: 'win', id: e.id });
