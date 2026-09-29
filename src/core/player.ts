@@ -197,6 +197,14 @@ export function updatePlayer(w: World, inp: InputFrame): void {
       }
       return;
 
+    case 'recoil':
+      // Knocked-away blade: recover in time to deflect or dodge the counter.
+      if (a.t >= 12) {
+        if (inp.pressed.guard || (inp.held.guard && buf.consume('guard', tick, B))) return enterGuard(w, p, true);
+        if (buf.consume('dodge', tick, B)) return startDodge(w, p, inp);
+      }
+      return;
+
     case 'hitstun':
       // Recovery roll out of light hit-stun keeps the flow going.
       if (a.t >= 10 && buf.consume('dodge', tick, B)) return startDodge(w, p, inp);

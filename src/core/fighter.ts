@@ -46,6 +46,9 @@ export class Fighter {
   brain: Brain | null = null;
   /** Rendering scale (armored / boss are bigger). */
   size = 1;
+  /** Recent consecutive hits taken (stun-lock protection). */
+  poiseHits = 0;
+  poiseTimer = 0;
 
   constructor(id: number, team: Team, arch: Archetype | null, pos: Vec2, yaw: number, hp: number, posture: number, radius: number) {
     this.id = id;
@@ -137,6 +140,7 @@ export class Fighter {
   }
 
   regenPosture(): void {
+    if (this.poiseTimer > 0 && --this.poiseTimer === 0) this.poiseHits = 0;
     this.postureIdle++;
     const guarding = this.act.kind === 'guard';
     if (this.isPlayer) {

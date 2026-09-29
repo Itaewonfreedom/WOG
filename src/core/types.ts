@@ -145,6 +145,8 @@ export interface Brain {
   aware: boolean;
   slot: number;
   rangedCooldown: number;
+  /** Poise exhausted: break out of the player's pressure on the next free tick. */
+  breakout: boolean;
 }
 
 /** How an archetype reacts to one attack type. */
@@ -191,6 +193,10 @@ export interface Archetype {
     /** Chance to chain into a follow-up of the same string. */
     comboChance: number;
     feintChance: number;
+    /** Consecutive hits (within ~1.5 s) before the enemy breaks out of a stun-lock. */
+    poise: number;
+    /** How it breaks out: parry stance (deflects light hits), back-step + counter, or shield charge. */
+    breakout: 'parry' | 'backstep' | 'bash' | 'none';
   };
   /** Posture broken also requires HP threshold? (boss) */
   isBoss?: boolean;

@@ -23,6 +23,7 @@ export function makeBrain(w: World, f: Fighter): Brain {
     aware: true,
     slot: 0,
     rangedCooldown: Math.round(w.rng.range(60, 140)),
+    breakout: false,
   };
 }
 
@@ -114,7 +115,7 @@ function think(w: World, e: Fighter): void {
       e.vel = scale(rightOf(e.yaw), b.strafeDir * speed * 0.25);
       if (--b.guardTimer <= 0) e.set('free', Infinity);
       // Counter out of guard once the player's attack is spent.
-      else if (b.token && b.counter && p.attackPhase === 'recovery' && gap < 2.5) {
+      else if (b.counter && (p.is('recoil') || p.attackPhase === 'recovery') && gap < 2.8 && !playerCinematic(w)) {
         b.counter = false;
         const m = pickMove(w, e, gap, false);
         if (m) startEnemyAttack(w, e, m);
@@ -145,15 +146,19 @@ function think(w: World, e: Fighter): void {
     return;
   }
 
+  if (b.breakout) {
+    b.breakout = false;
+    return breakOut(w, e, gap);
+  }
   if (b.pendingGuard) {
     b.pendingGuard = false;
     e.set('guard', Infinity);
     b.guardTimer = Math.round(w.rng.range(50, 100));
     return;
   }
-  // Reactive block when the player winds up close by.
-  if (arch.ai.guardChance > 0 && !b.token && p.attackPhase === 'startup' && gap < 2.6 && w.rng.chance(arch.ai.guardChance * 0.25)) {
-    e.set('guard', Infinity);
+  // Reactive block when the player winds up close by. The boss answers with a parry stance.
+  if (arch.ai.guardChance > 0 && (!b.token || arch.isBoss) && p.attackPhase === 'startup' && gap < 2.6 && w.rng.chance(arch.ai.guardChance * 0.25)) {
+    e.set('guard', Infinity, { value: arch.isBoss && w.rng.chance(0.5) ? 1 : 0 });
     b.guardTimer = Math.round(w.rng.range(40, 80));
     return;
   }
@@ -204,6 +209,36 @@ function think(w: World, e: Fighter): void {
   if (--b.strafeTimer <= 0) {
     b.strafeTimer = Math.round(w.rng.range(80, 200));
     b.strafeDir = b.strafeDir === 1 ? -1 : 1;
+  }
+}
+
+/** Poise exhausted: stop being a punching bag. */
+function breakOut(w: World, e: Fighter, gap: number): void {
+  const b = e.brain!;
+  const p = w.player;
+  switch (e.arch!.ai.breakout) {
+    case 'parry':
+      // Onimusha-style reverse deflect: light hits into this stance get knocked away.
+      e.set('guard', Infinity, { value: 1 });
+      b.guardTimer = 50;
+      b.counter = true;
+      w.emit({ type: 'text', text: '튕기기 자세', sub: '강공격·방패 치기로 깨라', style: 'warn', id: e.id });
+      return;
+    case 'backstep': {
+      const away = norm(sub(e.pos, p.pos));
+      e.set('evade', 20, { from: { ...e.pos }, to: add(e.pos, scale(away, 2.2)), travel: 12, side: 1 });
+      b.counter = true;
+      b.token = true;
+      return;
+    }
+    case 'bash':
+      if (gap < 4.5) {
+        b.token = true;
+        startEnemyAttack(w, e, getMove('sh_charge'));
+      }
+      return;
+    default:
+      return;
   }
 }
 

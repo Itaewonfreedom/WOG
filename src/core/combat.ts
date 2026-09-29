@@ -231,7 +231,6 @@ export function canIssen(w: World, p: Fighter, att: Fighter): boolean {
 }
 
 export function resolveOnPlayer(w: World, att: Fighter, p: Fighter, m: MoveDef): void {
-  const ps = w.ps;
   const a = p.act;
 
   if (playerInvulnerable(w, p)) {
@@ -412,6 +411,7 @@ export function resolveOnEnemy(w: World, p: Fighter, e: Fighter, m: MoveDef): vo
 
   // Enemy guard stance (ronin / boss). Heavy & bash break it.
   if (e.act.kind === 'guard' && frontal && !m.trueStrike) {
+    if (e.act.value === 1 && !m.heavy && !m.interrupt) return enemyParry(w, p, e);
     if (m.heavy || m.interrupt) {
       e.set('guardbreak', 50);
       e.addPosture(m.posture * 0.5);
@@ -505,9 +505,36 @@ export function applyHitToEnemy(w: World, p: Fighter, e: Fighter, dmg: number, p
     if (e.brain) {
       e.brain.token = e.brain.token && !e.is('hitstun', 'stagger');
       if (e.arch && w.rng.chance(e.arch.ai.guardChance)) e.brain.pendingGuard = true;
+      // Poise: a string of hits in quick succession makes the enemy break out instead of flinching forever.
+      if (e.arch && !o.arrow && e.arch.ai.breakout !== 'none') {
+        e.poiseHits++;
+        e.poiseTimer = 90;
+        if (e.poiseHits >= e.arch.ai.poise) {
+          e.poiseHits = 0;
+          e.brain.breakout = true;
+          e.brain.pendingGuard = false;
+          if (e.is('hitstun')) e.act.dur = Math.min(e.act.dur, 8);
+        }
+      }
     }
   }
   w.freeze(o.result === 'effective' ? HITSTOP.effective : o.heavy ? HITSTOP.heavy : HITSTOP.light);
+}
+
+/** 역튕기기: an enemy in parry stance knocks the player's light attack away (Onimusha works both ways). */
+function enemyParry(w: World, p: Fighter, e: Fighter): void {
+  p.set('recoil', 30);
+  w.pushBack(p, sub(p.pos, e.pos), 0.5);
+  e.set('guard', 16, { value: 0 });
+  if (e.brain) {
+    e.brain.counter = true;
+    e.brain.token = true;
+    e.brain.guardTimer = 16;
+  }
+  w.stats.badHits++;
+  w.freeze(HITSTOP.deflect);
+  w.emit({ type: 'deflect', defender: e.id, attacker: p.id, pos: midpoint(p, e) });
+  w.emit({ type: 'text', text: '튕겨냈다', sub: '적의 튕기기 — 강공격·방패 치기로 깨라', style: 'bad', id: e.id });
 }
 
 function doEvade(w: World, e: Fighter, p: Fighter): void {
