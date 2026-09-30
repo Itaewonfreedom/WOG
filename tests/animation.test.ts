@@ -28,6 +28,7 @@ interface View {
 class Sim {
   readonly views = new Map<number, View>();
   readonly events: { frame: number; ev: CombatEvent }[] = [];
+  private readonly queue: { ev: CombatEvent; tick: number }[] = [];
   readonly held = new Set<Button>();
   private pressed: Button[] = [];
   private released: Button[] = [];
@@ -81,8 +82,13 @@ class Sim {
     const dt = 1 / this.hz;
     const w = this.w;
     w.update(dt, this.input());
-    for (const ev of w.drainEvents()) {
-      this.events.push({ frame: this.frameNo, ev });
+    // Like Game.frame: reactions play when the display reaches the tick the event happened on.
+    for (const e of w.drainTimedEvents()) {
+      this.events.push({ frame: this.frameNo, ev: e.ev });
+      this.queue.push(e);
+    }
+    while (this.queue.length && this.queue[0].tick <= w.displayTick + 1e-6) {
+      const ev = this.queue.shift()!.ev;
       if (ev.type === 'hit') {
         const tgt = w.get(ev.target);
         const att = w.get(ev.attacker);
@@ -1672,6 +1678,39 @@ describe('리뷰 회귀 4', () => {
       expect(held, `${hz}Hz`).toBeGreaterThan(0);
       if (hz === 144) expect(approached, `${hz}Hz`).toBeGreaterThan(0);
       expect(gap, `${hz}Hz`).toBeLessThan(0.05);
+    }
+  });
+
+  it('준비 동작 중에 맞아 끊긴 공격: 멈춘 틱까지 이어 그리는 동안 손이 튀지 않는다 (30/60/144Hz)', () => {
+    const m = getMove('ro_lunge');
+    for (const hz of [30, 60, 144]) {
+      const { w, e } = duelWorld('ronin', 2.2);
+      const sim = new Sim(w, hz);
+      sim.run(3);
+      startEnemyAttack(w, e, m);
+      e.brain!.aware = false;
+      const tl = swingTl(m);
+      let last: THREE.Vector3 | null = null;
+      let worst = 0;
+      let approached = 0;
+      const cb = (f: Fighter, v: View, _p: Pose, simDt: number) => {
+        if (f.id !== e.id) return;
+        const h = v.anim.rawPose.handR.clone();
+        if (v.anim.approach) {
+          approached++;
+          // Per tick of display time: no faster than the windup itself moves (~3 cm / tick).
+          if (last && simDt > 0) worst = Math.max(worst, h.distanceTo(last) / (simDt * 60));
+        }
+        last = h;
+      };
+      sim.run(Math.round((6 / 60) * hz), cb);
+      expect(e.act.kind === 'attack' && e.act.t < tl.windupEnd, `${hz}Hz still in windup`).toBe(true);
+      sim.press('thrust');
+      sim.frame(cb);
+      sim.release('thrust');
+      sim.run(Math.round(hz * 0.5), cb);
+      expect(approached, `${hz}Hz`).toBeGreaterThan(0);
+      expect(worst, `${hz}Hz`).toBeLessThan(0.06);
     }
   });
 

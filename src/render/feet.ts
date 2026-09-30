@@ -218,7 +218,9 @@ export class FootPlanter {
       }
       const decay = Math.exp(-dt * 25);
       const liftY = speed > 8 ? Math.min(0.08, (speed - 8) * 0.004 + 0.03) * scale : 0;
-      this.airLift += (liftY - this.airLift) * (1 - Math.exp(-dt * 40));
+      // The faster the dash, the sooner the feet leave the ground (a 60 m/s issen would otherwise
+      // drag them along for its first tick).
+      this.airLift += (liftY - this.airLift) * (1 - Math.exp(-dt * Math.max(40, speed * 3)));
       for (const i of FEET) {
         const f = this.feet[i];
         f.swinging = false;

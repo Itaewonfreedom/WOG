@@ -449,6 +449,7 @@ export class Animator {
   private replEndTick = 0;
   private replSerial = -1;
   private readonly replEntry = basePose();
+  private readonly replEntryVel = new THREE.Vector3();
   private readonly appr = { move: null as MoveDef | null, t: 0, serial: -1 };
   private approachOn = false;
   private aimSink = 0;
@@ -571,7 +572,7 @@ export class Animator {
 
     if (this.approachOn) {
       const m = this.replMove!;
-      this.attackPose(swingFor(this.family, m)!, m, swingTl(m), this.appr.t, this.replEntry, this.target);
+      this.attackPose(swingFor(this.family, m)!, m, swingTl(m), this.appr.t, this.replEntry, this.target, this.replEntryVel);
     } else this.actionPose(f, w, t, this.target);
 
     const vx = (f.pos.x - f.prevPos.x) * 60;
@@ -646,7 +647,8 @@ export class Animator {
       const r = f.replaced && f.replaced.serial === this.atkSerial ? f.replaced : null;
       const at = Math.min(tl.end, r ? r.t : this.atkT + Math.max(0, w.tick - this.atkTick));
       clonePose(this.entry, this.replEntry);
-      this.attackPose(sw, m, tl, at, this.replEntry, this.from);
+      this.replEntryVel.copy(this.entryVel);
+      this.attackPose(sw, m, tl, at, this.replEntry, this.from, this.replEntryVel);
       this.fixHands(this.from);
       this.from.bodyYaw = m.id === 'r_s4' ? wrapAngle(this.from.bodyYaw) : 0;
       if (r) {
@@ -683,7 +685,7 @@ export class Animator {
   }
 
   // ── Attacks ───────────────────────────────────────────────────────────────
-  private swingPose(sw: Swing, m: MoveDef, tl: SwingTimeline, t: number, entry: Pose, out: Pose, holdWindup = false): Pose {
+  private swingPose(sw: Swing, m: MoveDef, tl: SwingTimeline, t: number, entry: Pose, out: Pose, holdWindup = false, entryVel: THREE.Vector3 = this.entryVel): Pose {
     const wind = this.kp(sw.windup);
     const strike = this.kp(sw.strike);
     const follow = this.kp(sw.follow);
@@ -704,7 +706,7 @@ export class Animator {
       const u = t / tl.windupEnd;
       lerpPoseParts(entry, wind, smooth(u * 1.35), smooth(u * 1.12), smooth(u), out, pivot);
       const h = u * (1 - u) * (1 - u) * (tl.windupEnd / 60);
-      out.handR.addScaledVector(this.entryVel, h);
+      out.handR.addScaledVector(entryVel, h);
       return out;
     }
     if (t < tl.release) {
@@ -728,8 +730,8 @@ export class Animator {
   }
 
   /** A melee attack's whole-body pose at time t (the swing, the spin, the leap). */
-  private attackPose(sw: Swing, m: MoveDef, tl: SwingTimeline, t: number, entry: Pose, out: Pose): Pose {
-    this.swingPose(sw, m, tl, t, entry, out);
+  private attackPose(sw: Swing, m: MoveDef, tl: SwingTimeline, t: number, entry: Pose, out: Pose, entryVel: THREE.Vector3 = this.entryVel): Pose {
+    this.swingPose(sw, m, tl, t, entry, out, false, entryVel);
     if (m.id === 'r_s4') out.bodyYaw = smooth((t - SPIN_START(m)) / SPIN_LEN(m)) * Math.PI * 2;
     if (m.id === 'du_leap') {
       // Arc through the air during the startup.
