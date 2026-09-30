@@ -441,6 +441,18 @@ export class Animator {
   private atkMove: MoveDef | null = null;
   private atkT = 0;
   private atkTick = 0;
+  private atkSerial = -1;
+  /** A replaced attack (deflected, bounced, killed… on some tick): until the display reaches that
+   *  tick it keeps drawing the attack, so the hit-stop approach and the trail end at contact. */
+  private replMove: MoveDef | null = null;
+  private replT = 0;
+  private replEndTick = 0;
+  private replSerial = -1;
+  private readonly replEntry = basePose();
+  private readonly appr = { move: null as MoveDef | null, t: 0, serial: -1 };
+  private approachOn = false;
+  private aimSink = 0;
+  private bobK = 1;
   /** Direction of the performer in the victim's frame, latched at contact (the fall never re-aims). */
   private perfX = 0;
   private perfZ = 1;
@@ -534,6 +546,16 @@ export class Animator {
       this.atkMove = a.move ?? null;
       this.atkT = a.t;
       this.atkTick = w.tick;
+      this.atkSerial = f.serial;
+    }
+    // An attack replaced on some tick is drawn on until the display reaches that tick (the
+    // hit-stop approach), including the tick itself; the new action takes over from there.
+    const dTick = w.displayTick;
+    this.approachOn = this.replMove !== null && a.kind !== 'attack' && dTick <= this.replEndTick + 1e-9;
+    if (this.approachOn) {
+      this.appr.move = this.replMove;
+      this.appr.t = this.replT + (dTick - this.replEndTick);
+      this.appr.serial = this.replSerial;
     }
     if (a.kind === 'gale') {
       // Same clock as the pose: a new dash-cut segment starts from where the last one ended.
@@ -547,7 +569,10 @@ export class Animator {
     this.hitAge += dtSim;
     this.dtSim = dtSim;
 
-    this.actionPose(f, w, t, this.target);
+    if (this.approachOn) {
+      const m = this.replMove!;
+      this.attackPose(swingFor(this.family, m)!, m, swingTl(m), this.appr.t, this.replEntry, this.target);
+    } else this.actionPose(f, w, t, this.target);
 
     const vx = (f.pos.x - f.prevPos.x) * 60;
     const vz = (f.pos.z - f.prevPos.z) * 60;
@@ -559,8 +584,8 @@ export class Animator {
     this.locomotion(f, this.target, speed, lx, lz);
     this.flinch(f, this.target);
 
-    this.blend += dtSim;
-    const k = this.blendDur <= 0 ? 1 : smooth(this.blend / this.blendDur);
+    if (!this.approachOn) this.blend += dtSim;
+    const k = this.blendDur <= 0 || this.approachOn ? 1 : smooth(this.blend / this.blendDur);
     if (k >= 1) clonePose(this.target, this.animPose);
     else lerpPose(this.from, this.target, k, this.animPose);
     this.fixHands(this.animPose);
@@ -614,12 +639,22 @@ export class Animator {
     // strike key when that happened on its contact tick — not from the last drawn frame.
     const m = this.prevKindIs('attack') ? this.atkMove : null;
     const sw = m && !m.projectile ? swingFor(this.family, m) : null;
+    this.replMove = null;
     if (m && sw) {
       const tl = swingTl(m);
-      const at = Math.min(tl.end, this.atkT + Math.max(0, w.tick - this.atkTick));
-      this.swingPose(sw, m, tl, at, this.entry, this.from);
+      // The tick it really stopped on, recorded by the core (at any number of ticks per frame).
+      const r = f.replaced && f.replaced.serial === this.atkSerial ? f.replaced : null;
+      const at = Math.min(tl.end, r ? r.t : this.atkT + Math.max(0, w.tick - this.atkTick));
+      clonePose(this.entry, this.replEntry);
+      this.attackPose(sw, m, tl, at, this.replEntry, this.from);
       this.fixHands(this.from);
-      this.from.bodyYaw = m.id === 'r_s4' ? wrapAngle(smooth((at - SPIN_START(m)) / SPIN_LEN(m)) * Math.PI * 2) : 0;
+      this.from.bodyYaw = m.id === 'r_s4' ? wrapAngle(this.from.bodyYaw) : 0;
+      if (r) {
+        this.replMove = m;
+        this.replT = at;
+        this.replEndTick = this.atkTick + (r.t - this.atkT);
+        this.replSerial = this.atkSerial;
+      }
     }
     clonePose(this.from, this.entry);
     // Momentum carry: the new windup starts moving the way the blade was already going.
@@ -692,6 +727,23 @@ export class Animator {
     return lerpPoseParts(follow, this.stance, smooth(r * 1.15), smooth(r), smooth(r), out, pivot);
   }
 
+  /** A melee attack's whole-body pose at time t (the swing, the spin, the leap). */
+  private attackPose(sw: Swing, m: MoveDef, tl: SwingTimeline, t: number, entry: Pose, out: Pose): Pose {
+    this.swingPose(sw, m, tl, t, entry, out);
+    if (m.id === 'r_s4') out.bodyYaw = smooth((t - SPIN_START(m)) / SPIN_LEN(m)) * Math.PI * 2;
+    if (m.id === 'du_leap') {
+      // Arc through the air during the startup.
+      const u = clamp01(t / (m.startup + m.active));
+      out.pelvis.y += Math.sin(u * Math.PI) * 0.55;
+    }
+    return out;
+  }
+
+  /** While a replaced attack is still being drawn up to its final tick (see update). */
+  get approach(): { readonly move: MoveDef | null; readonly t: number; readonly serial: number } | null {
+    return this.approachOn ? this.appr : null;
+  }
+
   private actionPose(f: Fighter, w: World, t: number, out: Pose): Pose {
     const a = f.act;
     const fam = this.family;
@@ -705,13 +757,7 @@ export class Animator {
         if (!sw) return out;
         if (fam === 'archer' && m.projectile) return this.archerShot(t, m, out);
         const tl = swingTl(m);
-        this.swingPose(sw, m, tl, t, this.entry, out);
-        if (m.id === 'r_s4') out.bodyYaw = smooth((t - SPIN_START(m)) / SPIN_LEN(m)) * Math.PI * 2;
-        if (m.id === 'du_leap') {
-          // Arc through the air during the startup.
-          const u = clamp01(t / (m.startup + m.active));
-          out.pelvis.y += Math.sin(u * Math.PI) * 0.55;
-        }
+        this.attackPose(sw, m, tl, t, this.entry, out);
         // Fumikomi: the lead foot lifts and stamps down on the contact tick.
         if (!this.stepPlanned && !m.projectile && !m.feint && m.id !== 'du_leap' && m.id !== 'r_s4' && (a.lunge ?? 0) > 0.3) {
           const lead = Math.min(tl.contact - 1, m.heavy || m.finale ? 12 : 9);
@@ -1203,13 +1249,18 @@ export class Animator {
   private locomotion(f: Fighter, out: Pose, speed: number, lx: number, lz: number): void {
     const k = f.act.kind;
     const loco = k === 'free' || k === 'guard' || k === 'aim' || k === 'fear' || (k === 'standoff' && !f.isPlayer && (f.act.value ?? 0) !== 2) || k === 'heal';
-    if (!loco || speed < 0.15) return;
+    // Aiming on the move, the knees stay bent and the hips level (no stride bob), so the bow arm
+    // does not bob with the steps. Eased in and out: aim movement starts and stops instantly.
+    const moving = loco && speed >= 0.15;
+    const ease = 1 - Math.exp(-this.dtSim * 10);
+    this.aimSink += ((moving && k === 'aim' ? 0.06 * Math.min(1, speed / 2) : 0) - this.aimSink) * ease;
+    this.bobK += ((k === 'aim' ? 0 : 1) - this.bobK) * ease;
+    out.pelvis.y -= this.aimSink;
+    if (!moving) return;
     const run = clamp01((speed - 2.5) / 3);
     const g = this.planter.gait;
-    // Pelvis rides highest mid-stride and dips as the foot lands. Aiming on the move, the knees
-    // stay bent and the hips level instead, so the bow arm does not bob with the steps.
-    if (k === 'aim') out.pelvis.y -= 0.06 * Math.min(1, speed / 2);
-    else out.pelvis.y -= (1 - Math.abs(g)) * 0.035 * Math.min(1, speed / 3);
+    // Pelvis rides highest mid-stride and dips as the foot lands.
+    out.pelvis.y -= (1 - Math.abs(g)) * 0.035 * Math.min(1, speed / 3) * this.bobK;
     out.lean += lz * run * 0.18;
     out.roll += -lx * run * 0.08;
     out.torsoYaw += g * 0.06 * Math.min(1, speed / 3);
@@ -1235,7 +1286,8 @@ export class Animator {
       if (t >= SPIN_START(a.move) - 1 && t <= SPIN_START(a.move) + SPIN_LEN(a.move)) return 'pivot';
     }
     // Pass-through dashes cover metres in a few ticks: the feet trail the body, then plant.
-    if ((a.kind === 'issen' && t <= ISSEN_TL.travel + 2) || (a.kind === 'gale' && galeLocal(t) < GALE_TL.contact + 2)) return 'air';
+    // The issen waits out its hit-stop on planted feet; it leaves the ground as the dash starts.
+    if ((a.kind === 'issen' && t > 0 && t <= ISSEN_TL.travel + 2) || (a.kind === 'gale' && galeLocal(t) < GALE_TL.contact + 2)) return 'air';
     return 'ground';
   }
 

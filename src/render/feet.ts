@@ -108,6 +108,7 @@ const _e = new THREE.Euler();
 const _piv = new THREE.Vector3();
 const _lf = new THREE.Vector3();
 const _land = new THREE.Vector3();
+const _dRoot = new THREE.Vector3();
 
 export class FootPlanter {
   private readonly feet: [FootState, FootState] = [newFoot(), newFoot()];
@@ -119,6 +120,11 @@ export class FootPlanter {
   /** Current (eased) pelvis drop that keeps both legs within reach. */
   private drop = 0;
   private inAir = false;
+  /** Height the feet are carried at in a very fast dash (eases in and out). */
+  private airLift = 0;
+  private readonly lastRoot = new THREE.Vector3();
+  /** How much the hands go down with the pelvis (eased: 0 with the bow up, 1 otherwise). */
+  private handK = 1;
   /** Gait cycle phase 0..1 while walking / running (lead foot lifts at 0, the other at 0.5). */
   private phase = 0;
   private walking = false;
@@ -153,6 +159,10 @@ export class FootPlanter {
    */
   update(pose: Pose, rootPos: THREE.Vector3, rootYaw: number, scale: number, vel: THREE.Vector3, dt: number, mode: FeetMode, p: StepParams, bulk = 1): void {
     this.landings.length = 0;
+    _dRoot.subVectors(rootPos, this.lastRoot).setY(0);
+    this.lastRoot.copy(rootPos);
+    const handGoal = pose.bowInHand > 0.5 ? 0 : 1;
+    this.handK = this.init ? this.handK + (handGoal - this.handK) * (1 - Math.exp(-dt * 15)) : handGoal;
     const c = Math.cos(rootYaw);
     const s = Math.sin(rootYaw);
     // The character view rotates the whole body (legs included) about the pelvis for rolls and
@@ -187,6 +197,7 @@ export class FootPlanter {
       }
       this.init = true;
       this.inAir = false;
+      this.airLift = 0;
       this.pivotFree = -1;
       this.planned = null;
       this.drop = 0;
@@ -200,16 +211,21 @@ export class FootPlanter {
       // behind a fast-moving body; in a very fast dash they leave the ground instead of skating.
       if (!this.inAir) {
         this.inAir = true;
-        for (const i of FEET) this.feet[i].airOff.subVectors(this.feet[i].cur, _ideal[i]);
+        this.airLift = 0;
+        // Measured against where the pose had the feet before this frame's body motion: the feet
+        // leave with the body (a dash starting this frame does not leave them metres behind).
+        for (const i of FEET) this.feet[i].airOff.subVectors(this.feet[i].cur, _ideal[i]).add(_dRoot);
       }
       const decay = Math.exp(-dt * 25);
       const liftY = speed > 8 ? Math.min(0.08, (speed - 8) * 0.004 + 0.03) * scale : 0;
+      this.airLift += (liftY - this.airLift) * (1 - Math.exp(-dt * 40));
       for (const i of FEET) {
         const f = this.feet[i];
         f.swinging = false;
         f.airOff.multiplyScalar(decay);
         f.cur.copy(_ideal[i]).add(f.airOff);
-        if (liftY > f.cur.y) f.cur.y += (liftY - f.cur.y) * (1 - decay);
+        // Never below the ground (a toppling body pivots on its feet).
+        f.cur.y = Math.max(f.cur.y, this.airLift, 0);
         f.curYaw += wrap(idealYaw[i] - f.curYaw) * (1 - decay);
         f.planted.copy(f.cur).setY(0);
         f.plantedYaw = f.curYaw;
@@ -287,15 +303,22 @@ export class FootPlanter {
           f.ahead = -1;
           f.dur = Math.min(0.5, pl.dur / Math.max(0.05, 1 - f.u));
         } else {
+          // Late in a stride (or planted): the stomp starts from where the foot is now, at its
+          // current height — a foot still in the air is not put down first.
+          const up = f.swinging ? Math.max(0, f.cur.y) : 0;
+          _pred.copy(f.cur).setY(0);
           if (f.swinging) {
-            // Nearly down: let this stride land where it is now, then stomp from there.
             f.swinging = false;
-            f.planted.copy(f.cur).setY(0);
+            f.planted.copy(_pred);
             f.plantedYaw = f.curYaw;
           }
           this.beginStep(pl.foot, _ideal[pl.foot], idealYaw[pl.foot], vel, speed, p, scale);
-          f.dur = pl.dur;
-          f.lift = pl.lift;
+          f.lift = Math.max(pl.lift, up / scale);
+          const u0 = Math.asin(Math.min(1, up / (f.lift * scale))) / Math.PI;
+          const e0 = smoothstep(u0);
+          if (e0 > 1e-6) f.from.copy(_pred).addScaledVector(f.to, -e0).multiplyScalar(1 / (1 - e0)).setY(0);
+          f.u = u0;
+          f.dur = pl.dur / (1 - u0);
         }
         f.fresh = true;
       }
@@ -316,7 +339,7 @@ export class FootPlanter {
             const f = this.feet[sw];
             const trig = sw === p.lead ? 0 : 0.5;
             const left = (1 - f.u) * f.dur * cyc;
-            this.phase = (trig + Math.min(f.u * swing * cyc, 0.5 - left) + 1) % 1;
+            this.phase = (((trig + Math.min(f.u * swing * cyc, 0.5 - left)) % 1) + 1) % 1;
             f.ahead = ahead;
             // Re-aim it like a stride (landing ahead), keeping the foot where it is right now.
             const e = smoothstep(f.u);
@@ -357,7 +380,7 @@ export class FootPlanter {
           f.dur = swing;
           // Already this far into the swing (it should have started between two frames); the
           // time elapsed this frame is part of that, so it is not advanced again.
-          f.u = Math.min(0.5, since / cyc / swing);
+          f.u = Math.max(0, Math.min(0.5, since / cyc / swing));
           f.fresh = true;
         }
       } else this.walking = false;
@@ -434,17 +457,22 @@ export class FootPlanter {
     // Lower the pelvis where a leg would over-stretch. Planted feet are a hard constraint (so they
     // never get dragged by the leg); a swinging foot counts where it is going to land, blended in
     // as the swing progresses, so the pelvis is already down when it lands (no snap).
+    let left = Infinity;
     for (const i of FEET) {
       const f = this.feet[i];
       if (!f.swinging) continue;
       const k = smoothstep(Math.min(1, f.u));
       _land.copy(f.cur).lerp(_lf.copy(f.to).setY(0), k);
       toLocal(_land, i === 0 ? pose.footL : pose.footR, rootPos, c, s, scale);
+      left = Math.min(left, (1 - f.u) * f.dur);
     }
     const all = pose.pelvis.y - fitPelvisY(pose, bulk, true, true);
     this.writeBack(pose, rootPos, rootYaw, c, s, scale, tilt);
     const hard = pose.pelvis.y - fitPelvisY(pose, bulk, !this.feet[0].swinging, !this.feet[1].swinging);
-    this.drop += (all - this.drop) * (1 - Math.exp(-dt * (all > this.drop ? 25 : 10)));
+    // Going down: eased, but at least fast enough to be there when the stepping foot lands (it
+    // becomes a hard constraint then — no one-frame drop on touchdown).
+    const rate = all > this.drop ? Math.max(1 - Math.exp(-dt * 25), Math.min(1, dt / Math.max(left, 1e-4))) : 1 - Math.exp(-dt * 10);
+    this.drop += (all - this.drop) * rate;
     this.drop = Math.max(this.drop, hard);
     this.applyDrop(pose);
     // The view tilts the body about the lowered pelvis: write the feet back about that pivot.
@@ -458,9 +486,8 @@ export class FootPlanter {
    *  With the bow up the hands stay put — the bow is held where the arrow leaves. */
   private applyDrop(pose: Pose): void {
     pose.pelvis.y -= this.drop;
-    if (pose.bowInHand > 0.5) return;
-    pose.handR.y -= this.drop;
-    pose.handL.y -= this.drop;
+    pose.handR.y -= this.drop * this.handK;
+    pose.handL.y -= this.drop * this.handK;
   }
 
   /** Planted / swinging feet (world) back into the pose (character-local, through the body tilt). */

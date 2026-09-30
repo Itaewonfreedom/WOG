@@ -481,8 +481,16 @@ export class Game {
     let key = f.serial;
     let color = f.isPlayer ? 0xfff0d0 : 0xcfcfcf;
     let intensity = f.isPlayer ? 1 : 0.6;
-    if (a.kind === 'attack' && a.move && !a.move.feint && !a.move.projectile && a.move.type !== 'blunt') {
-      const m = a.move;
+    // An attack replaced on this tick (deflected, bounced, killed…) is still drawn up to its final
+    // tick while the display gets there: its ribbon runs on to the blade at contact.
+    const ap = v.anim.approach;
+    const atk = a.kind === 'attack' ? a.move : ap ? ap.move : null;
+    if (ap && a.kind !== 'attack') {
+      t = ap.t;
+      key = ap.serial;
+    }
+    if (atk && !atk.feint && !atk.projectile && atk.type !== 'blunt') {
+      const m = atk;
       win = swingTl(m).trail;
       if (f.isPlayer) color = m.type === 'thrust' ? 0xbfeeff : m.heavy ? 0xffd27a : 0xfff0d0;
       if (m.unblockable === 'red') {

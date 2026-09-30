@@ -1,4 +1,4 @@
-import type { Action, ActionKind, Archetype, Brain, Team } from './types';
+import type { Action, ActionKind, Archetype, Brain, MoveDef, Team } from './types';
 import { angleDiff, dist, fromYaw, sub, toYaw, type Vec2 } from './math';
 import { T } from './tuning';
 
@@ -29,6 +29,9 @@ export class Fighter {
   act: Action = { kind: 'free', t: 0, dur: Infinity };
   /** Increments every time a new action starts (lets the presentation detect restarts reliably). */
   serial = 0;
+  /** The last attack that was replaced by another action, as it stood on its final tick
+   *  (presentation only: lets the renderer finish drawing it exactly). */
+  replaced: { move: MoveDef; t: number; serial: number } | null = null;
   /** Enemy-only: ticks the big shield is knocked aside. */
   shieldOpen = 0;
   burning = 0;
@@ -81,6 +84,8 @@ export class Fighter {
   }
 
   set(kind: ActionKind, dur: number, extra: Partial<Action> = {}): Action {
+    const o = this.act;
+    if (o.kind === 'attack' && o.move) this.replaced = { move: o.move, t: o.t, serial: this.serial };
     this.act = { kind, t: 0, dur, ...extra };
     this.serial++;
     return this.act;

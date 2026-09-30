@@ -390,6 +390,7 @@ describe('발 접지', () => {
       sim.run(3);
       if (scenario === 'issen') doIssen(w, w.player, e, false);
       const prev = { L: new THREE.Vector3(), R: new THREE.Vector3() };
+      const prevRoot = new THREE.Vector3();
       let have = false;
       let maxGroundSlide = 0;
       let maxPop = 0;
@@ -397,6 +398,7 @@ describe('발 접지', () => {
       const planted = { L: false, R: false };
       const step = (f: Fighter, v: View, _pose: Pose, simDt: number) => {
         if (!f.isPlayer) return;
+        const root = v.char.root.position;
         for (const s of ['L', 'R'] as const) {
           const now = footWorld(v.char, s);
           const isP = v.anim.planter.isPlanted(s === 'L' ? 0 : 1);
@@ -404,13 +406,16 @@ describe('발 접지', () => {
             const d = Math.hypot(now.x - prev[s].x, now.z - prev[s].z);
             // Planted in both frames: must not skid.
             if (isP && planted[s]) maxGroundSlide = Math.max(maxGroundSlide, d);
-            // Relative to the body, a stepping foot moves at most ~20 m/s (of simulation time) —
-            // anything faster is a teleport.
-            if (simDt > 0) maxPop = Math.max(maxPop, (d - Math.hypot(f.pos.x - f.prevPos.x, f.pos.z - f.prevPos.z) * Math.min(2, simDt * 60)) / simDt);
+            // Relative to the displayed body, a stepping foot moves at most ~20 m/s (of simulation
+            // time) — anything faster is a teleport.
+            const rx = now.x - prev[s].x - (root.x - prevRoot.x);
+            const rz = now.z - prev[s].z - (root.z - prevRoot.z);
+            if (simDt > 0) maxPop = Math.max(maxPop, Math.hypot(rx, rz) / simDt);
           }
           prev[s].copy(now);
           planted[s] = isP;
         }
+        prevRoot.copy(root);
         have = true;
       };
       if (seq.length) for (const b of seq) {
@@ -1425,3 +1430,270 @@ void startEnemyAttack;
 void Driver;
 void ISSEN_TL;
 void (null as unknown as MoveDef);
+
+// ── 10. Review round 3 ──────────────────────────────────────────────────────
+describe('리뷰 회귀 3', () => {
+  it('쓰러지는 피해자(일섬·일반 사망)의 발이 땅 아래로 파고들지 않는다', () => {
+    for (const how of ['issen', 'kill'] as const) {
+      const { w, e } = duelWorld('ronin', how === 'issen' ? 2.2 : 2.0);
+      const sim = new Sim(w, 60);
+      sim.run(3);
+      if (how === 'issen') {
+        e.hp = 1;
+        doIssen(w, w.player, e, false);
+      } else {
+        e.hp = 1;
+        sim.tap('slash');
+      }
+      let lowest = Infinity;
+      let falling = 0;
+      sim.run(240, (f, v) => {
+        if (f.id !== e.id || (f.act.kind !== 'finished' && f.act.kind !== 'dead')) return;
+        falling++;
+        for (const s of ['L', 'R'] as const) lowest = Math.min(lowest, footWorld(v.char, s).y);
+      });
+      expect(falling, how).toBeGreaterThan(30);
+      expect(lowest, how).toBeGreaterThan(-0.005);
+    }
+  });
+
+  it('일섬 돌진: 발이 몸과 함께 떠서 지나간다 (땅에 끌리지 않음, 30/60/144Hz)', () => {
+    for (const hz of [30, 60, 144]) {
+      const { w, e } = duelWorld('ronin', 2.2);
+      const sim = new Sim(w, hz);
+      sim.run(3);
+      doIssen(w, w.player, e, false);
+      let grounded = 0;
+      let dashing = 0;
+      sim.run(Math.round(hz * 1.2), (f, v) => {
+        if (!f.isPlayer || f.act.kind !== 'issen') return;
+        const t = f.act.t - 1 + w.alpha;
+        if (t < 2 || t > ISSEN_TL.travel) return;
+        dashing++;
+        for (const s of ['L', 'R'] as const) if (footWorld(v.char, s).y < 0.02) grounded++;
+      });
+      expect(dashing, `${hz}Hz`).toBeGreaterThan(0);
+      expect(grounded, `${hz}Hz`).toBe(0);
+    }
+  });
+
+  it('튕기기 일섬: 히트스톱 동안 디딘 발이 움직이지 않는다', () => {
+    const { w, e } = duelWorld('ronin', 2.2);
+    const sim = new Sim(w, 144);
+    sim.run(3);
+    doIssen(w, w.player, e, true);
+    // Feet planted on the first hit-stop frame stay put until the dash starts.
+    const start = { L: new THREE.Vector3(), R: new THREE.Vector3() };
+    const held = { L: false, R: false };
+    let first = true;
+    let moved = 0;
+    sim.run(144, (f, v) => {
+      if (!f.isPlayer || w.hitstop === 0) return;
+      for (const s of ['L', 'R'] as const) {
+        const p = footWorld(v.char, s);
+        if (first) {
+          held[s] = v.anim.planter.isPlanted(s === 'L' ? 0 : 1);
+          start[s].copy(p);
+        } else if (held[s]) moved = Math.max(moved, Math.hypot(p.x - start[s].x, p.z - start[s].z));
+      }
+      first = false;
+    });
+    expect(held.L || held.R).toBe(true);
+    expect(moved).toBeLessThan(0.002);
+  });
+});
+
+// ── 11. Review round 4 ──────────────────────────────────────────────────────
+describe('리뷰 회귀 4', () => {
+  it('달리다 공격: 공중에 있던 발이 한 프레임에 땅으로 떨어졌다 다시 뜨지 않는다 (144Hz)', () => {
+    let worst = 0;
+    for (let n = 60; n <= 120; n += 4) {
+      const w = soloWorld();
+      const sim = new Sim(w, 144);
+      sim.run(3);
+      sim.move = { x: 0, z: 1 };
+      sim.run(n);
+      sim.move = { x: 0, z: 0 };
+      sim.tap('slash');
+      const lastY = { L: -1, R: -1 };
+      sim.run(40, (f, v) => {
+        if (!f.isPlayer) return;
+        for (const s of ['L', 'R'] as const) {
+          const y = footWorld(v.char, s).y;
+          if (lastY[s] >= 0) worst = Math.max(worst, lastY[s] - y);
+          lastY[s] = y;
+        }
+      });
+    }
+    // A swing comes down at most ~3 cm per 144 Hz frame; dropping a raised foot is ~13 cm.
+    expect(worst).toBeLessThan(0.05);
+  });
+
+  it('달리다 조준·속사: 손 높이가 한 프레임에 튀지 않는다 (bowInHand 경계)', () => {
+    for (const hz of [60, 144]) {
+      for (const how of ['aim', 'quickshot'] as const) {
+        const w = soloWorld();
+        const sim = new Sim(w, hz);
+        sim.run(3);
+        sim.move = { x: 0, z: 1 };
+        sim.run(Math.round(hz * 0.6));
+        sim.move = { x: 0, z: 0 };
+        if (how === 'aim') sim.press('aim');
+        else sim.tap('quickshot');
+        let last = Number.NaN;
+        let worst = 0;
+        let lastP = Number.NaN;
+        let pelvisJump = 0;
+        sim.run(Math.round(hz * 0.8), (f, v) => {
+          if (!f.isPlayer) return;
+          // The hands' lowering relative to the pelvis' (on top of the animation's own motion):
+          // the body going down moves both; switching the hands in or out must not jump.
+          const q = v.anim.pose;
+          const r = v.anim.rawPose;
+          const y = q.handL.y - r.handL.y - (q.pelvis.y - r.pelvis.y);
+          if (!Number.isNaN(last)) worst = Math.max(worst, Math.abs(y - last) * (hz / 60));
+          last = y;
+          // The pelvis settles as the spread feet step in, without a drop on a foot's touchdown.
+          if (!Number.isNaN(lastP)) pelvisJump = Math.max(pelvisJump, lastP - (q.pelvis.y - r.pelvis.y) - 0.03 * (60 / hz));
+          lastP = q.pelvis.y - r.pelvis.y;
+        });
+        expect(pelvisJump, `${how} ${hz}Hz pelvis`).toBeLessThan(0.02);
+        // Per 60 Hz frame: eased in and out, never the whole pelvis drop (10-20 cm) at once.
+        expect(worst, `${how} ${hz}Hz`).toBeLessThan(0.08);
+      }
+    }
+  });
+
+  it('조준한 채 움직이기 시작·멈춤: 골반이 한 프레임에 튀지 않는다', () => {
+    for (const hz of [30, 60]) {
+      const w = soloWorld();
+      const sim = new Sim(w, hz);
+      sim.run(3);
+      sim.press('aim');
+      sim.run(Math.round(hz * 0.6));
+      let last = Number.NaN;
+      let worst = 0;
+      const track = (f: Fighter, v: View) => {
+        if (!f.isPlayer) return;
+        const y = v.anim.rawPose.pelvis.y;
+        if (!Number.isNaN(last)) worst = Math.max(worst, Math.abs(y - last));
+        last = y;
+      };
+      sim.move = { x: 1, z: 0 };
+      sim.run(Math.round(hz * 0.5), track);
+      sim.move = { x: 0, z: 0 };
+      sim.run(Math.round(hz * 0.5), track);
+      expect(worst, `${hz}Hz`).toBeLessThan(0.025);
+    }
+  });
+
+  it('도약 베기가 공중에서 끊겨도 몸이 한 프레임에 떨어지지 않는다', () => {
+    const w = soloWorld();
+    const e = w.spawn('duelist', { x: 0, z: 4 }, Math.PI);
+    e.brain!.aware = false;
+    e.brain!.cooldown = 1e9;
+    const sim = new Sim(w, 60);
+    sim.run(3);
+    startEnemyAttack(w, e, getMove('du_leap'));
+    e.brain!.aware = false;
+    let last = Number.NaN;
+    let jump = 0;
+    let cut = false;
+    sim.run(40, (f, v) => {
+      if (f.id !== e.id) return;
+      const y = v.anim.rawPose.pelvis.y;
+      if (!Number.isNaN(last) && f.act.kind !== 'attack') jump = Math.max(jump, Math.abs(y - last));
+      last = y;
+      if (!cut && f.act.kind === 'attack' && f.act.t >= 18) {
+        f.set('hitstun', 20);
+        cut = true;
+      }
+    });
+    expect(cut).toBe(true);
+    // The hit reaction brings the body down over ~10 frames (≈0.11 m/frame); the bug dropped 0.55 m at once.
+    expect(jump).toBeLessThan(0.2);
+  });
+
+  it('연격 교체: 이전 공격이 실제로 멈춘 틱에서 다음 공격이 시작한다 (30Hz = 60Hz)', () => {
+    const run = (hz: number, atLeast: number) => {
+      const w = soloWorld();
+      const sim = new Sim(w, hz);
+      sim.run(3);
+      sim.tap('slash');
+      for (let i = 0; i < 200 && !(w.player.act.kind === 'attack' && w.player.act.t >= atLeast); i++) sim.frame();
+      const oldT = w.player.act.t;
+      const serial = w.player.serial;
+      sim.tap('slash');
+      const v = sim.view(w.player);
+      expect(w.player.serial).toBeGreaterThan(serial);
+      expect(w.player.replaced?.t).toBe(oldT);
+      return { t: oldT, hand: (v.anim as unknown as { entry: Pose }).entry.handR.clone() };
+    };
+    const a30 = run(30, 20);
+    const a60 = run(60, a30.t);
+    expect(a60.t).toBe(a30.t);
+    expect(a60.hand.distanceTo(a30.hand)).toBeLessThan(1e-3);
+  });
+
+  it('튕겨진 공격자: 히트스톱에 도달할 때까지 공격을 이어 그리고, 트레일은 멈춘 칼끝에서 끝난다', () => {
+    const ro = getMove('ro_cut2');
+    for (const hz of [60, 144]) {
+      const { w, e } = duelWorld('ronin', 2.2);
+      const sim = new Sim(w, hz);
+      sim.run(3);
+      startEnemyAttack(w, e, ro);
+      e.brain!.aware = false;
+      sim.run(Math.round(((ro.startup - 5) / 60) * hz));
+      sim.press('guard');
+      const trail = new SwordTrail(0xffffff);
+      const base = new THREE.Vector3();
+      const tip = new THREE.Vector3();
+      let held = 0;
+      let gap = 0;
+      let approached = 0;
+      sim.run(Math.round(hz * 0.6), (f, v, _p, simDt) => {
+        if (f.id !== e.id) return;
+        // Same rule as Game.updateTrail: the live attack, or the replaced one still being drawn.
+        const ap = v.anim.approach;
+        if (ap) approached++;
+        const m = f.act.kind === 'attack' ? f.act.move : ap ? ap.move : null;
+        const t = f.act.kind === 'attack' ? Math.max(0, f.act.t - 1 + w.alpha) : ap ? ap.t : 0;
+        const key = f.act.kind === 'attack' ? f.serial : ap ? ap.serial : f.serial;
+        const win = m ? swingTl(m).trail : null;
+        v.char.bladeWorld(base, tip);
+        trail.update(base, tip, !!win && t >= win[0] && t < win[1], simDt, key);
+        if (w.hitstop > 0 && w.alpha >= 1 && f.act.kind !== 'attack') {
+          held++;
+          const st = (trail as unknown as { st: Float32Array; head: number });
+          const i = st.head * 3;
+          gap = Math.max(gap, Math.hypot(st.st[i] - tip.x, st.st[i + 1] - tip.y, st.st[i + 2] - tip.z));
+        }
+      });
+      expect(held, `${hz}Hz`).toBeGreaterThan(0);
+      if (hz === 144) expect(approached, `${hz}Hz`).toBeGreaterThan(0);
+      expect(gap, `${hz}Hz`).toBeLessThan(0.05);
+    }
+  });
+
+  it('공격 중에 죽은 적: 쓰러짐은 죽은 틱에 화면이 닿자마자 시작된다 (공격을 계속 그리지 않음)', () => {
+    const ro = getMove('ro_cut2');
+    const { w, e } = duelWorld('ronin', 2.0);
+    const sim = new Sim(w, 60);
+    sim.run(3);
+    startEnemyAttack(w, e, ro);
+    e.brain!.aware = false;
+    e.hp = 1;
+    sim.run(4);
+    sim.tap('thrust');
+    let deadFrames = 0;
+    let drawingAttack = 0;
+    sim.run(90, (f, v) => {
+      if (f.id !== e.id || f.act.kind !== 'dead') return;
+      deadFrames++;
+      // The kill's hit-stop holds the blow at contact on purpose; after it, the body falls.
+      if (v.anim.approach && w.hitstop === 0) drawingAttack++;
+    });
+    expect(deadFrames).toBeGreaterThan(30);
+    expect(drawingAttack).toBeLessThanOrEqual(1);
+  });
+});
