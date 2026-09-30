@@ -43,6 +43,8 @@ interface FootState {
   swinging: boolean;
   from: THREE.Vector3;
   fromYaw: number;
+  /** A step started part-way (at this ease): the yaw turns from where the foot points now. */
+  yawE0: number;
   to: THREE.Vector3;
   toYaw: number;
   u: number;
@@ -66,6 +68,7 @@ function newFoot(): FootState {
     swinging: false,
     from: new THREE.Vector3(),
     fromYaw: 0,
+    yawE0: 0,
     to: new THREE.Vector3(),
     toYaw: 0,
     u: 0,
@@ -258,6 +261,7 @@ export class FootPlanter {
           f.fromYaw = f.curYaw;
           f.lift = f.cur.y / scale;
           f.u = 0.5;
+          f.yawE0 = 0.5;
           f.dur = 0.14;
         }
       }
@@ -293,6 +297,7 @@ export class FootPlanter {
         f.toYaw = idealYaw[i];
         f.lift = Math.max(0.01, f.cur.y / scale);
         f.u = 0.5;
+        f.yawE0 = 0.5;
         f.dur = 0.16;
       }
       if (this.planned) {
@@ -320,6 +325,7 @@ export class FootPlanter {
           const e0 = smoothstep(u0);
           if (e0 > 1e-6) f.from.copy(_pred).addScaledVector(f.to, -e0).multiplyScalar(1 / (1 - e0)).setY(0);
           f.u = u0;
+          f.yawE0 = e0;
           f.dur = pl.dur / (1 - u0);
         }
         f.fresh = true;
@@ -383,6 +389,7 @@ export class FootPlanter {
           // Already this far into the swing (it should have started between two frames); the
           // time elapsed this frame is part of that, so it is not advanced again.
           f.u = Math.max(0, Math.min(0.5, since / cyc / swing));
+          f.yawE0 = smoothstep(f.u);
           f.fresh = true;
         }
       } else this.walking = false;
@@ -441,7 +448,7 @@ export class FootPlanter {
       const e = smoothstep(f.u);
       f.cur.lerpVectors(f.from, f.to, e);
       f.cur.y = Math.sin(Math.PI * f.u) * f.lift * scale;
-      f.curYaw = f.fromYaw + wrap(f.toYaw - f.fromYaw) * e;
+      f.curYaw = f.fromYaw + wrap(f.toYaw - f.fromYaw) * (f.yawE0 > 0 ? Math.max(0, (e - f.yawE0) / (1 - f.yawE0)) : e);
       gait += (i === 0 ? 1 : -1) * Math.sin(Math.PI * f.u);
       if (f.u >= 1 - 1e-6) {
         f.swinging = false;
@@ -473,7 +480,7 @@ export class FootPlanter {
     const hard = pose.pelvis.y - fitPelvisY(pose, bulk, !this.feet[0].swinging, !this.feet[1].swinging);
     // Going down: eased, but at least fast enough to be there when the stepping foot lands (it
     // becomes a hard constraint then — no one-frame drop on touchdown).
-    const rate = all > this.drop ? Math.max(1 - Math.exp(-dt * 25), Math.min(1, dt / Math.max(left, 1e-4))) : 1 - Math.exp(-dt * 10);
+    const rate = all > this.drop ? Math.max(1 - Math.exp(-dt * 25), Math.min(1, dt / (left + dt))) : 1 - Math.exp(-dt * 10);
     this.drop += (all - this.drop) * rate;
     this.drop = Math.max(this.drop, hard);
     this.applyDrop(pose);
@@ -523,14 +530,16 @@ export class FootPlanter {
     f.swinging = true;
     f.fresh = false;
     f.u = 0;
+    f.yawE0 = 0;
     f.ahead = ahead;
     f.from.copy(f.planted);
     f.fromYaw = f.plantedYaw;
     this.predict(ideal, vel, p.swingDur, p, speed, scale, f.to, ahead);
     f.toYaw = idealYaw;
     const dist = f.from.distanceTo(f.to) / scale;
-    // Short adjustments are quicker and lower than full strides.
-    f.dur = Math.max(0.06, p.swingDur * Math.min(1, 0.45 + dist * 1.4));
+    // Short adjustments are quicker and lower than full strides; a step that turns the foot a lot
+    // takes a little longer (the foot turns at most ~17 rad/s).
+    f.dur = Math.max(0.06, p.swingDur * Math.min(1, 0.45 + dist * 1.4), Math.abs(wrap(idealYaw - f.fromYaw)) * 0.06);
     f.lift = Math.max(0.03, p.lift * Math.min(1, 0.5 + dist * 1.6));
   }
 }

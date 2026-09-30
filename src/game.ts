@@ -6,13 +6,14 @@ import type { ArchetypeId, CombatEvent, FinisherKind, Projectile } from './core/
 import { T } from './core/tuning';
 import { drawInfo } from './core/bow';
 import { MOVES } from './core/moves';
-import { FINISHER_TL, GALE_TL, ISSEN_TL, galeLocal, releaseTicks } from './core/timeline';
+import { FINISHER_TL, ISSEN_TL, releaseTicks } from './core/timeline';
 import { emptyInput } from './core/input';
 import { startEnemyAttack } from './core/ai';
 import { createEnvironment, type Environment } from './render/environment';
 import { CharacterView, setMetalEnvironment, type CharKind } from './render/character';
-import { Animator, actionTime, swingTl } from './render/anim';
+import { Animator, actionTime } from './render/anim';
 import type { Landing } from './render/feet';
+import { trailSpec, type TrailSpec } from './render/trail-spec';
 import { CameraRig } from './render/camera';
 import { Decals, makeGlintTexture, Puffs, Rings, Sparks, SwordTrail } from './render/fx';
 import { InputDevices } from './input/devices';
@@ -53,6 +54,7 @@ interface CineSubjects {
 const _root = new THREE.Vector3();
 const _base = new THREE.Vector3();
 const _tip = new THREE.Vector3();
+const _trail: TrailSpec = { active: false, key: 0, color: 0, intensity: 1, maxSpeed: 45 };
 const _focus = new THREE.Vector3();
 
 const V3 = (x = 0, y = 0, z = 0) => new THREE.Vector3(x, y, z);
@@ -475,60 +477,14 @@ export class Game {
 
   /** Trail windows come from the same timelines as the damage and the poses (core/timeline.ts). */
   private updateTrail(v: View, f: Fighter, dt: number): void {
-    const a = f.act;
-    let t = actionTime(f, this.world);
-    let win: readonly [number, number] | null = null;
-    let key = f.serial;
-    let color = f.isPlayer ? 0xfff0d0 : 0xcfcfcf;
-    let intensity = f.isPlayer ? 1 : 0.6;
-    // An attack replaced on this tick (deflected, bounced, killed…) is still drawn up to its final
-    // tick while the display gets there: its ribbon runs on to the blade at contact.
-    const ap = v.anim.approach;
-    const atk = a.kind === 'attack' ? a.move : ap ? ap.move : null;
-    if (ap && a.kind !== 'attack') {
-      t = ap.t;
-      key = ap.serial;
-    }
-    if (atk && !atk.feint && !atk.projectile && atk.type !== 'blunt') {
-      const m = atk;
-      win = swingTl(m).trail;
-      if (f.isPlayer) color = m.type === 'thrust' ? 0xbfeeff : m.heavy ? 0xffd27a : 0xfff0d0;
-      if (m.unblockable === 'red') {
-        color = 0xff4a30;
-        intensity = 1.2;
-      } else if (m.unblockable === 'blue') {
-        color = 0x8ccaff;
-        intensity = 1.1;
-      }
-    } else if (a.kind === 'finisher') {
-      const k = a.finisher;
-      if (k === 'slash' || k === 'thrust' || k === 'flow') win = FINISHER_TL[k].trail;
-      color = 0xffe6c0;
-      intensity = 1.4;
-    } else if (a.kind === 'issen') {
-      win = ISSEN_TL.trail;
-      color = 0xffffff;
-      intensity = 2;
-    } else if (a.kind === 'gale') {
-      key = f.serial * 64 + Math.floor((a.t - 1) / GALE_TL.seg);
-      t = galeLocal(t);
-      win = GALE_TL.trail;
-      color = 0xa8f0ff;
-      intensity = 1.6;
-    } else if (a.kind === 'standoff' && !f.isPlayer && a.value === 1) {
-      const travel = a.travel ?? 18;
-      win = [travel - 3, travel + 6];
-    }
-    const active = !!win && t >= win[0] && t < win[1];
-    // The issen's pass-through streak is the point of the move; other dashes split the ribbon.
-    const maxSpeed = a.kind === 'issen' || a.kind === 'gale' ? Infinity : 45;
-    v.trail.setColor(color, intensity);
+    const sp = trailSpec(f, this.world, v.anim, _trail);
+    v.trail.setColor(sp.color, sp.intensity);
     v.char.bladeWorld(_base, _tip);
-    v.trail.update(_base, _tip, active, dt, key, maxSpeed);
+    v.trail.update(_base, _tip, sp.active, dt, sp.key, sp.maxSpeed);
     if (v.trailL) {
       v.char.bladeWorld(_base, _tip, true);
-      v.trailL.setColor(color, intensity);
-      v.trailL.update(_base, _tip, active, dt, key, maxSpeed);
+      v.trailL.setColor(sp.color, sp.intensity);
+      v.trailL.update(_base, _tip, sp.active, dt, sp.key, sp.maxSpeed);
     }
   }
 

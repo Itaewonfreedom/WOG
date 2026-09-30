@@ -15,6 +15,7 @@ import { FINISHER_TL, ISSEN_TL, releaseTicks } from '../src/core/timeline';
 import { Animator, __animTest, swingTl } from '../src/render/anim';
 import { CharacterView, type CharKind } from '../src/render/character';
 import { SwordTrail } from '../src/render/fx';
+import { trailSpec, type TrailSpec } from '../src/render/trail-spec';
 import { CameraRig } from '../src/render/camera';
 import { applyKey, basePose, slerpDir, type Pose } from '../src/render/pose';
 import { Driver, duel } from './helpers';
@@ -1652,6 +1653,7 @@ describe('리뷰 회귀 4', () => {
       sim.run(Math.round(((ro.startup - 5) / 60) * hz));
       sim.press('guard');
       const trail = new SwordTrail(0xffffff);
+      const spec: TrailSpec = { active: false, key: 0, color: 0, intensity: 1, maxSpeed: 45 };
       const base = new THREE.Vector3();
       const tip = new THREE.Vector3();
       let held = 0;
@@ -1659,15 +1661,11 @@ describe('리뷰 회귀 4', () => {
       let approached = 0;
       sim.run(Math.round(hz * 0.6), (f, v, _p, simDt) => {
         if (f.id !== e.id) return;
-        // Same rule as Game.updateTrail: the live attack, or the replaced one still being drawn.
-        const ap = v.anim.approach;
-        if (ap) approached++;
-        const m = f.act.kind === 'attack' ? f.act.move : ap ? ap.move : null;
-        const t = f.act.kind === 'attack' ? Math.max(0, f.act.t - 1 + w.alpha) : ap ? ap.t : 0;
-        const key = f.act.kind === 'attack' ? f.serial : ap ? ap.serial : f.serial;
-        const win = m ? swingTl(m).trail : null;
+        // The game's own ribbon rule (Game.updateTrail).
+        if (v.anim.approach) approached++;
+        const sp = trailSpec(f, w, v.anim, spec);
         v.char.bladeWorld(base, tip);
-        trail.update(base, tip, !!win && t >= win[0] && t < win[1], simDt, key);
+        trail.update(base, tip, sp.active, simDt, sp.key, sp.maxSpeed);
         if (w.hitstop > 0 && w.alpha >= 1 && f.act.kind !== 'attack') {
           held++;
           const st = (trail as unknown as { st: Float32Array; head: number });
@@ -1734,5 +1732,79 @@ describe('리뷰 회귀 4', () => {
     });
     expect(deadFrames).toBeGreaterThan(30);
     expect(drawingAttack).toBeLessThanOrEqual(1);
+  });
+});
+
+// ── 12. Review round 5 ──────────────────────────────────────────────────────
+describe('리뷰 회귀 5', () => {
+  it('달리다 옆의 적을 공격: 공중에서 시작한 디딤 스텝의 발 방향이 한 프레임에 돌지 않는다', () => {
+    let worst = 0;
+    for (const hz of [60, 144]) {
+      for (let n = Math.round(hz * 0.3); n <= Math.round(hz * 0.85); n += Math.max(1, Math.round(hz / 30))) {
+        const w = soloWorld();
+        w.player.pos = { x: 0, z: -2 };
+        w.player.prevPos = { x: 0, z: -2 };
+        const e = w.spawn('ronin', { x: 1.6, z: 0 }, Math.PI);
+        e.brain!.aware = false;
+        e.brain!.cooldown = 1e9;
+        const sim = new Sim(w, hz);
+        sim.run(2);
+        sim.move = { x: 0, z: 1 };
+        sim.run(n);
+        sim.move = { x: 0, z: 0 };
+        const last = [Number.NaN, Number.NaN];
+        const track = (f: Fighter, v: View) => {
+          if (!f.isPlayer) return;
+          const feet = (v.anim.planter as unknown as { feet: { curYaw: number }[] }).feet;
+          for (const i of [0, 1]) {
+            const y = feet[i].curYaw;
+            if (!Number.isNaN(last[i])) {
+              let d = y - last[i];
+              while (d > Math.PI) d -= Math.PI * 2;
+              while (d < -Math.PI) d += Math.PI * 2;
+              worst = Math.max(worst, Math.abs(d) * (hz / 60));
+            }
+            last[i] = y;
+          }
+        };
+        sim.press('slash');
+        sim.frame(track);
+        sim.release('slash');
+        sim.run(Math.round(hz * 0.3), track);
+      }
+    }
+    // Per 60 Hz frame. Attacking a target at the side snaps the body ~110° in one tick and the
+    // stepping feet follow within ~0.1 s (≈0.6 rad per frame at the peak); a step started in the
+    // air used to jump by half of the turn at once (≈2.5).
+    expect(worst).toBeLessThan(0.7);
+  });
+
+  it('방패 치기 중 일섬: 방패 치기를 이어 그리는 동안 일섬 리본이 미리 그려지지 않는다', () => {
+    const ro = getMove('ro_cut2');
+    let checked = 0;
+    for (const hz of [60, 144]) {
+      for (const lead of [2, 3, 4]) {
+        const { w, e } = duelWorld('ronin', 2.2);
+        const sim = new Sim(w, hz);
+        sim.run(3);
+        startEnemyAttack(w, e, ro);
+        e.brain!.aware = false;
+        while (e.act.kind === 'attack' && e.act.t < ro.startup - lead) sim.frame();
+        sim.press('guard');
+        sim.tap('slash');
+        const spec: TrailSpec = { active: false, key: 0, color: 0, intensity: 1, maxSpeed: 45 };
+        let bad = 0;
+        sim.run(Math.round(hz * 0.4), (f, v) => {
+          if (!f.isPlayer || !v.anim.approach) return;
+          checked++;
+          const sp = trailSpec(f, w, v.anim, spec);
+          if (v.anim.approach.move?.type === 'blunt' && sp.active) bad++;
+          expect(sp.key).toBe(v.anim.approach.serial);
+        });
+        sim.release('guard');
+        expect(bad, `${hz}Hz lead ${lead}`).toBe(0);
+      }
+    }
+    expect(checked).toBeGreaterThan(0);
   });
 });
