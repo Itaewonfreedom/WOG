@@ -378,6 +378,51 @@ describe('발 접지', () => {
     expect(landedAfter).toBe(true);
   });
 
+  it('연격·일섬 돌진 중에도 땅에 닿은 발은 미끄러지지 않고, 발이 한 프레임에 튀지 않는다', () => {
+    for (const scenario of ['combo', 'issen'] as const) {
+      const { w, e } = duelWorld(scenario === 'combo' ? 'dummy' : 'ronin', 2.4);
+      if (scenario === 'combo') {
+        e.hp = 9999;
+        e.maxHp = 9999;
+        e.maxPosture = 9999;
+      }
+      const sim = new Sim(w, 60);
+      sim.run(3);
+      if (scenario === 'issen') doIssen(w, w.player, e, false);
+      const prev = { L: new THREE.Vector3(), R: new THREE.Vector3() };
+      let have = false;
+      let maxGroundSlide = 0;
+      let maxPop = 0;
+      const seq: Button[] = scenario === 'combo' ? ['slash', 'slash', 'thrust', 'slash', 'thrust', 'slash'] : [];
+      const planted = { L: false, R: false };
+      const step = (f: Fighter, v: View, _pose: Pose, simDt: number) => {
+        if (!f.isPlayer) return;
+        for (const s of ['L', 'R'] as const) {
+          const now = footWorld(v.char, s);
+          const isP = v.anim.planter.isPlanted(s === 'L' ? 0 : 1);
+          if (have) {
+            const d = Math.hypot(now.x - prev[s].x, now.z - prev[s].z);
+            // Planted in both frames: must not skid.
+            if (isP && planted[s]) maxGroundSlide = Math.max(maxGroundSlide, d);
+            // Relative to the body, a stepping foot moves at most ~20 m/s (of simulation time) —
+            // anything faster is a teleport.
+            if (simDt > 0) maxPop = Math.max(maxPop, (d - Math.hypot(f.pos.x - f.prevPos.x, f.pos.z - f.prevPos.z) * Math.min(2, simDt * 60)) / simDt);
+          }
+          prev[s].copy(now);
+          planted[s] = isP;
+        }
+        have = true;
+      };
+      if (seq.length) for (const b of seq) {
+        sim.tap(b);
+        sim.run(16, step);
+      }
+      else sim.run(90, step);
+      expect(maxGroundSlide, scenario).toBeLessThan(0.006);
+      expect(maxPop, scenario).toBeLessThan(20);
+    }
+  });
+
   it('30/60/120Hz에서 같은 이동의 보폭 수가 같다 (프레임 독립)', () => {
     const counts = [30, 60, 120].map((hz) => walk(hz, { x: 0, z: 1 }, 2).landings);
     expect(Math.max(...counts) - Math.min(...counts)).toBeLessThanOrEqual(1);

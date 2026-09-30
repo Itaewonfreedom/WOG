@@ -36,6 +36,8 @@ interface FootState {
   fresh: boolean;
   /** Landing lead ahead of the ideal spot for this step (m, -1 = default). */
   ahead: number;
+  /** Air mode: offset from the pose, decaying to zero after take-off. */
+  airOff: THREE.Vector3;
   planted: THREE.Vector3;
   plantedYaw: number;
   swinging: boolean;
@@ -58,6 +60,7 @@ function newFoot(): FootState {
   return {
     fresh: false,
     ahead: -1,
+    airOff: new THREE.Vector3(),
     planted: new THREE.Vector3(),
     plantedYaw: 0,
     swinging: false,
@@ -114,6 +117,7 @@ export class FootPlanter {
   private pivotFree = -1;
   /** Current (eased) pelvis drop that keeps both legs within reach. */
   private drop = 0;
+  private inAir = false;
   /** Gait cycle phase 0..1 while walking / running (lead foot lifts at 0, the other at 0.5). */
   private phase = 0;
   private walking = false;
@@ -132,9 +136,9 @@ export class FootPlanter {
     this.planned = { foot, dur: Math.max(0.05, dur), lift };
   }
 
-  /** Is `foot` currently planted (for tests / debug)? */
+  /** Is `foot` currently planted (locked to its spot on the ground)? */
   isPlanted(foot: 0 | 1): boolean {
-    return !this.feet[foot].swinging;
+    return !this.inAir && !this.feet[foot].swinging && this.pivotFree !== foot;
   }
 
   worldFoot(foot: 0 | 1): THREE.Vector3 {
@@ -181,6 +185,7 @@ export class FootPlanter {
         f.stance = 1;
       }
       this.init = true;
+      this.inAir = false;
       this.pivotFree = -1;
       this.planned = null;
       this.drop = 0;
@@ -189,14 +194,22 @@ export class FootPlanter {
 
     const speed = Math.hypot(vel.x, vel.z);
     if (mode === 'air') {
-      // Airborne (rolls, leaps, falls, pass-through dashes): the feet follow the pose, easing
-      // off the spot they were planted on instead of snapping.
-      const k = 1 - Math.exp(-dt * 25);
+      // Airborne (rolls, leaps, falls, pass-through dashes): the feet ride with the pose. On the
+      // way in, the offset from where they were planted decays (no snap), but they never lag
+      // behind a fast-moving body; in a very fast dash they leave the ground instead of skating.
+      if (!this.inAir) {
+        this.inAir = true;
+        for (const i of FEET) this.feet[i].airOff.subVectors(this.feet[i].cur, _ideal[i]);
+      }
+      const decay = Math.exp(-dt * 25);
+      const liftY = speed > 8 ? Math.min(0.08, (speed - 8) * 0.004 + 0.03) * scale : 0;
       for (const i of FEET) {
         const f = this.feet[i];
         f.swinging = false;
-        f.cur.lerp(_ideal[i], k);
-        f.curYaw += wrap(idealYaw[i] - f.curYaw) * k;
+        f.airOff.multiplyScalar(decay);
+        f.cur.copy(_ideal[i]).add(f.airOff);
+        if (liftY > f.cur.y) f.cur.y += (liftY - f.cur.y) * (1 - decay);
+        f.curYaw += wrap(idealYaw[i] - f.curYaw) * (1 - decay);
         f.planted.copy(f.cur).setY(0);
         f.plantedYaw = f.curYaw;
         f.stance = 1;
@@ -210,6 +223,26 @@ export class FootPlanter {
       return;
     }
 
+    if (this.inAir) {
+      // Touch down: whatever height the feet were carried at comes down as a short landing step.
+      this.inAir = false;
+      for (const i of FEET) {
+        const f = this.feet[i];
+        if (f.cur.y > 0.005 * scale) {
+          f.swinging = true;
+          f.fresh = false;
+          f.ahead = -1;
+          f.to.copy(_ideal[i]).setY(0);
+          f.toYaw = idealYaw[i];
+          // Mid-swing (u = 0.5, smoothstep 0.5) exactly where the foot is now.
+          f.from.copy(f.cur).multiplyScalar(2).sub(f.to).setY(0);
+          f.fromYaw = f.curYaw;
+          f.lift = f.cur.y / scale;
+          f.u = 0.5;
+          f.dur = 0.14;
+        }
+      }
+    }
     for (const i of FEET) this.feet[i].stance += dt;
 
     // Pivot (spin attacks): the lead foot turns on the spot, the other follows the pose.
@@ -333,7 +366,7 @@ export class FootPlanter {
       // Keep steering the landing spot toward where the pose will want the foot when it lands
       // (the body keeps moving for the rest of the swing).
       this.predict(_ideal[i], vel, f.dur * (1 - f.u), p, speed, scale, _pred, f.ahead);
-      const steer = f.u >= 1 - 1e-6 ? 1 : Math.min(1, 1 - Math.exp(-dt * 18));
+      const steer = Math.min(1, 1 - Math.exp(-dt * 18));
       f.to.lerp(_pred, steer);
       f.toYaw = f.toYaw + wrap(idealYaw[i] - f.toYaw) * steer;
       const e = smoothstep(f.u);
