@@ -116,6 +116,8 @@ const METRICS = `(() => {
       rx: c.root.position.x, rz: c.root.position.z, fl: [fl.x, fl.y, fl.z], fr: [fr.x, fr.y, fr.z], tip: [tip.x, tip.y, tip.z], base: [base.x, base.y, base.z] });
   }
   out.kills = w.stats.kills;
+  const cp = g.cam.camera.position;
+  out.cam = [cp.x, cp.y, cp.z, g.cam.camera.fov, g.cam.inCinematic ? 1 : 0];
   return out;
 })()`;
 

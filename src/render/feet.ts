@@ -96,6 +96,8 @@ export class FootPlanter {
   private init = false;
   /** A step requested by the animation (e.g. the attack stomp that lands on the contact tick). */
   private planned: { foot: 0 | 1; dur: number; lift: number } | null = null;
+  /** Foot sweeping around (off the ground) during a pivot, or -1. */
+  private pivotFree = -1;
   readonly landings: Landing[] = [];
   /** -1..1: >0 while the left foot swings, <0 for the right (for arm counter-swing and bob). */
   gait = 0;
@@ -103,6 +105,7 @@ export class FootPlanter {
   reset(): void {
     this.init = false;
     this.planned = null;
+    this.pivotFree = -1;
   }
 
   /** Lift `foot` now and land it where the pose wants it after `dur` seconds. */
@@ -146,6 +149,7 @@ export class FootPlanter {
         f.stance = 1;
       }
       this.init = true;
+      this.pivotFree = -1;
       this.gait *= Math.exp(-dt * 10);
       return;
     }
@@ -160,13 +164,30 @@ export class FootPlanter {
       piv.plantedYaw = idealYaw[p.lead];
       piv.cur.copy(piv.planted);
       piv.curYaw = piv.plantedYaw;
-      const other = this.feet[p.lead === 0 ? 1 : 0];
+      // The other foot sweeps around with the body, just off the ground.
+      const oi = p.lead === 0 ? 1 : 0;
+      const other = this.feet[oi];
       other.swinging = false;
-      other.planted.copy(_ideal[p.lead === 0 ? 1 : 0]).setY(0);
-      other.plantedYaw = idealYaw[p.lead === 0 ? 1 : 0];
-      other.cur.copy(other.planted);
+      other.planted.copy(_ideal[oi]).setY(0);
+      other.plantedYaw = idealYaw[oi];
+      other.cur.copy(other.planted).setY(Math.max(_ideal[oi].y, 0.04 * scale));
       other.curYaw = other.plantedYaw;
+      this.pivotFree = oi;
     } else {
+      if (this.pivotFree >= 0) {
+        // Pivot over: the swept foot comes down where the pose wants it.
+        const i = this.pivotFree as 0 | 1;
+        const f = this.feet[i];
+        this.pivotFree = -1;
+        f.swinging = true;
+        f.from.copy(f.cur).setY(0);
+        f.fromYaw = f.curYaw;
+        this.predict(_ideal[i], vel, 0.08, p, speed, scale, f.to);
+        f.toYaw = idealYaw[i];
+        f.lift = Math.max(0.01, f.cur.y / scale);
+        f.u = 0.5;
+        f.dur = 0.16;
+      }
       if (this.planned) {
         const pl = this.planned;
         this.planned = null;
@@ -209,6 +230,7 @@ export class FootPlanter {
     for (const i of FEET) {
       const f = this.feet[i];
       if (!f.swinging) {
+        if (i === this.pivotFree) continue;
         f.cur.copy(f.planted);
         f.curYaw = f.plantedYaw;
         continue;
@@ -268,7 +290,7 @@ export class FootPlanter {
     const dist = f.from.distanceTo(f.to) / scale;
     // Short adjustments are quicker and lower than full strides.
     f.dur = Math.max(0.06, p.swingDur * Math.min(1, 0.45 + dist * 1.4));
-    f.lift = p.lift * Math.min(1, 0.35 + dist * 1.6);
+    f.lift = Math.max(0.03, p.lift * Math.min(1, 0.5 + dist * 1.6));
   }
 }
 

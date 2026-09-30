@@ -50,6 +50,7 @@ export class CameraRig {
   private readonly cineLook = new THREE.Vector3();
   private readonly focus = new THREE.Vector3();
   private focusW = 0;
+  private cineFov = 44;
   private trauma = 0;
   private time = 0;
   private sinceManual = 99;
@@ -225,7 +226,9 @@ export class CameraRig {
     this.camera.lookAt(finalLook);
     this.camera.rotateZ(n(4) * 0.03 * s);
 
-    const cineFov = this.cine?.style === 'standoff' ? 38 : this.cine ? 44 : 58;
+    // Keep the shot's lens while blending back out (the blend weight k takes it to the follow FOV).
+    if (this.cine) this.cineFov = this.cine.style === 'standoff' ? 38 : 44;
+    const cineFov = this.cineFov;
     const fov = 58 * (1 - aimK) + 46 * aimK;
     this.fovKick *= Math.pow(0.02, dt);
     this.camera.fov = fov * (1 - k) + cineFov * k - this.fovKick;

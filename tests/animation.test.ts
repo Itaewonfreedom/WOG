@@ -15,6 +15,7 @@ import { FINISHER_TL, ISSEN_TL, releaseTicks } from '../src/core/timeline';
 import { Animator, __animTest, swingTl } from '../src/render/anim';
 import { CharacterView, type CharKind } from '../src/render/character';
 import { SwordTrail } from '../src/render/fx';
+import { CameraRig } from '../src/render/camera';
 import { applyKey, basePose, slerpDir, type Pose } from '../src/render/pose';
 import { Driver, duel } from './helpers';
 
@@ -337,6 +338,42 @@ describe('발 접지', () => {
       expect(r.landings, JSON.stringify(mv)).toBeGreaterThan(4);
       expect(r.maxAnkleStretch, JSON.stringify(mv)).toBeLessThan(0.876);
     }
+  });
+
+  it('회전베기: 앞발은 제자리에서 피벗하고, 다른 발은 땅에 끌리지 않고 돌아 나간 뒤 착지한다', () => {
+    const { w, e } = duelWorld('dummy', 6);
+    void e;
+    const sim = new Sim(w, 60);
+    sim.run(3);
+    const m = getMove('r_s4');
+    w.player.set('attack', m.startup + m.active + m.recovery, { move: m, lunge: 0 });
+    let maxGroundSlide = 0;
+    let pivotSlide = 0;
+    let landedAfter = false;
+    const prev = { L: new THREE.Vector3(), R: new THREE.Vector3() };
+    let have = false;
+    let spun = 0;
+    sim.run(m.startup + m.active + m.recovery + 5, (f, v, pose) => {
+      if (!f.isPlayer) return;
+      spun = Math.max(spun, pose.bodyYaw);
+      const L = footWorld(v.char, 'L');
+      const R = footWorld(v.char, 'R');
+      if (have) {
+        const dL = Math.hypot(L.x - prev.L.x, L.z - prev.L.z);
+        const dR = Math.hypot(R.x - prev.R.x, R.z - prev.R.z);
+        // Only count frames where the foot is on the ground in both frames (a low step is not a slide).
+        if (L.y < 0.005 && prev.L.y < 0.005) pivotSlide = Math.max(pivotSlide, dL);
+        if (R.y < 0.005 && prev.R.y < 0.005) maxGroundSlide = Math.max(maxGroundSlide, dR);
+      }
+      prev.L.copy(L);
+      prev.R.copy(R);
+      have = true;
+      if (f.act.kind === 'attack' && f.act.t > 25) for (const l of v.anim.landings) if (l.foot === 1) landedAfter = true;
+    });
+    expect(spun).toBeGreaterThan(Math.PI * 1.9);
+    expect(pivotSlide).toBeLessThan(0.003);
+    expect(maxGroundSlide).toBeLessThan(0.02);
+    expect(landedAfter).toBe(true);
   });
 
   it('30/60/120Hz에서 같은 이동의 보폭 수가 같다 (프레임 독립)', () => {
@@ -678,6 +715,44 @@ describe('트레일 · 프레임 독립', () => {
       }
     }
     expect(n).toBeGreaterThan(5);
+  });
+});
+
+describe('피니쉬 카메라', () => {
+  it('진행 중인 두 인물을 따라가고, 끝나면 위치·화각이 튀지 않고 조작 카메라로 돌아간다', () => {
+    const cam = new CameraRig(16 / 9);
+    const player = new THREE.Vector3(0, 0, 0);
+    const victim = new THREE.Vector3(0, 0, 3);
+    const opts = { aiming: false, lockTarget: null, crowd: 0, moveDir: null, slowmo: false };
+    for (let i = 0; i < 30; i++) cam.update(1 / 60, player, opts);
+    cam.cinematic(player, victim, 'finisher', 10);
+    let maxMove = 0;
+    let maxFov = 0;
+    const last = new THREE.Vector3();
+    let lastFov = 0;
+    const mid0 = new THREE.Vector3();
+    for (let i = 0; i < 240; i++) {
+      // The performer dashes in during the shot.
+      if (i < 60) player.z = Math.min(1.6, player.z + 0.05);
+      cam.track(player, victim, victim.clone().setY(1.2), i > 40 && i < 90 ? 1 : 0);
+      if (i === 150) cam.releaseCinematic();
+      cam.update(1 / 60, player, opts);
+      const p = cam.camera.position;
+      // (The cut *into* the shot is deliberately quick; the tracking and the return must be smooth.)
+      if (i > 30) {
+        maxMove = Math.max(maxMove, p.distanceTo(last));
+        maxFov = Math.max(maxFov, Math.abs(cam.camera.fov - lastFov));
+      }
+      if (i === 20) mid0.copy(p);
+      last.copy(p);
+      lastFov = cam.camera.fov;
+    }
+    expect(cam.inCinematic).toBe(false);
+    // Smooth: no cut on release (< 12 cm and < 1.5° per 60 Hz frame).
+    expect(maxMove).toBeLessThan(0.12);
+    expect(maxFov).toBeLessThan(1.5);
+    // Back on the follow lens.
+    expect(cam.camera.fov).toBeGreaterThan(56);
   });
 });
 
