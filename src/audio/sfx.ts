@@ -524,6 +524,10 @@ interface Loop {
 interface Ambience extends Loop { wind: AudioBufferSourceNode; timer: number }
 interface DrawLoop extends Loop { noiseF: BiquadFilterNode; saw: OscillatorNode; sawF: BiquadFilterNode; lfo: OscillatorNode }
 
+export interface SfxHandle {
+  stop(): void;
+}
+
 export class Sfx {
   private ctx: AudioContext | null = null;
   private master: GainNode | null = null;
@@ -580,18 +584,19 @@ export class Sfx {
     this.applyMaster();
   }
 
-  play(name: SfxName, opts: PlayOpts = {}): void {
+  /** Play a sound. Returns a handle that can cut it short (e.g. a whoosh whose blow never came). */
+  play(name: SfxName, opts: PlayOpts = {}): SfxHandle | null {
     const { ctx, master, noiseBuf } = this;
-    if (!ctx || !master || !noiseBuf || ctx.state !== 'running') return;
+    if (!ctx || !master || !noiseBuf || ctx.state !== 'running') return null;
     const recipe = SOUNDS[name];
-    if (!recipe) return;
+    if (!recipe) return null;
     let voice: Voice | null = null;
     try {
       const now = nowMs();
-      if (now - (this.last.get(name) ?? -Infinity) < RATE_LIMIT_MS) return;
-      if (this.active >= MAX_VOICES) return;
+      if (now - (this.last.get(name) ?? -Infinity) < RATE_LIMIT_MS) return null;
+      if (this.active >= MAX_VOICES) return null;
       const vol = clamp(opts.volume ?? 1, 0, 4);
-      if (vol <= 0) return;
+      if (vol <= 0) return null;
       this.last.set(name, now);
 
       let pitch = clamp(opts.pitch ?? 1, 0.25, 4);
@@ -614,8 +619,19 @@ export class Sfx {
       voice = new Voice(ctx, noiseBuf, bus, busNodes, ctx.currentTime + 0.005, pitch, () => { this.active--; });
       recipe(voice);
       voice.settle();
+      return {
+        stop: () => {
+          try {
+            bus.gain.cancelScheduledValues(ctx.currentTime);
+            bus.gain.setTargetAtTime(0, ctx.currentTime, 0.02);
+          } catch {
+            /* already gone */
+          }
+        },
+      };
     } catch {
       voice?.settle();
+      return null;
     }
   }
 

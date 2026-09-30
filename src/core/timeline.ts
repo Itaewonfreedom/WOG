@@ -93,10 +93,13 @@ export const FINISHER_TL: Record<'slash' | 'thrust' | 'flow', FinisherTimeline> 
 /** Issen / hajiki issen / standoff cut: the ranger passes through the target. */
 export const ISSEN_TL = {
   dur: T.issenDur,
-  /** Core pass-through travel. */
+  /** Core pass-through travel (starts after the freeze). */
   travel: 5,
-  contact: 3,
-  trail: [1, 7] as [number, number],
+  /** The kill, the 'issen' event and its hit-stop happen when the issen starts (t = 0, or t = 1
+   *  for hajiki / standoff, which start before the tick's action pass): the pose is already on the
+   *  strike key for t ≤ contact — a flash cut — then carries through during the pass-through. */
+  contact: 1,
+  trail: [0, 7] as [number, number],
   /** Victim stays frozen in its attack pose, then the cut registers. */
   victimFreeze: 22,
   victimDown: 52,

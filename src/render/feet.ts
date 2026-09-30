@@ -29,6 +29,8 @@ export interface Landing {
 }
 
 interface FootState {
+  /** Started this frame: the time already elapsed this frame is not part of the step. */
+  fresh: boolean;
   planted: THREE.Vector3;
   plantedYaw: number;
   swinging: boolean;
@@ -49,6 +51,7 @@ const ANKLE = 0.07;
 
 function newFoot(): FootState {
   return {
+    fresh: false,
     planted: new THREE.Vector3(),
     plantedYaw: 0,
     swinging: false,
@@ -195,6 +198,7 @@ export class FootPlanter {
         this.beginStep(pl.foot, _ideal[pl.foot], idealYaw[pl.foot], vel, speed, p, scale);
         f.dur = pl.dur;
         f.lift = pl.lift;
+        f.fresh = true;
       }
       // Decide which planted foot needs to step.
       const need = _need;
@@ -239,13 +243,14 @@ export class FootPlanter {
       this.predict(_ideal[i], vel, f.dur * (1 - f.u), p, speed, scale, _pred);
       f.to.lerp(_pred, Math.min(1, 1 - Math.exp(-dt * 18)));
       f.toYaw = f.toYaw + wrap(idealYaw[i] - f.toYaw) * Math.min(1, 1 - Math.exp(-dt * 18));
-      f.u = Math.min(1, f.u + dt / f.dur);
+      if (f.fresh) f.fresh = false;
+      else f.u = Math.min(1, f.u + dt / f.dur);
       const e = smoothstep(f.u);
       f.cur.lerpVectors(f.from, f.to, e);
       f.cur.y = Math.sin(Math.PI * f.u) * f.lift * scale;
       f.curYaw = f.fromYaw + wrap(f.toYaw - f.fromYaw) * e;
       gait += (i === 0 ? 1 : -1) * Math.sin(Math.PI * f.u);
-      if (f.u >= 1) {
+      if (f.u >= 1 - 1e-6) {
         f.swinging = false;
         f.planted.copy(f.to).setY(0);
         f.plantedYaw = f.toYaw;
@@ -282,6 +287,7 @@ export class FootPlanter {
   private beginStep(i: 0 | 1, ideal: THREE.Vector3, idealYaw: number, vel: THREE.Vector3, speed: number, p: StepParams, scale: number): void {
     const f = this.feet[i];
     f.swinging = true;
+    f.fresh = false;
     f.u = 0;
     f.from.copy(f.planted);
     f.fromYaw = f.plantedYaw;
@@ -296,7 +302,7 @@ export class FootPlanter {
 
 /** Lower the pelvis just enough that both ankles are within leg reach (knees never lock straight). */
 export function fitPelvis(pose: Pose, bulk = 1): void {
-  if (Math.abs(pose.bodyPitch) > 0.25 || Math.abs(pose.bodyRoll) > 0.25) return;
+  if (Math.abs(wrap(pose.bodyPitch)) > 0.25 || Math.abs(wrap(pose.bodyRoll)) > 0.25) return;
   const cy = Math.cos(pose.pelvisYaw);
   const sy = Math.sin(pose.pelvisYaw);
   let maxY = pose.pelvis.y;

@@ -397,10 +397,16 @@ export function swingTl(m: MoveDef): SwingTimeline {
   let tl = SWING_TL.get(m.id);
   if (!tl) {
     tl = swingTimeline(m);
-    if (m.projectile) tl = { ...tl, release: Math.max(1, tl.contact - 2), windupEnd: Math.max(1, Math.min(tl.windupEnd, tl.contact - 4)) };
+    // Projectiles and feints have no core release; give the pose a short visual one.
+    if (m.projectile || m.feint) tl = { ...tl, release: Math.max(1, tl.contact - 3), windupEnd: Math.max(1, Math.min(tl.windupEnd, tl.contact - 5)) };
     SWING_TL.set(m.id, tl);
   }
   return tl;
+}
+
+/** Presentation time of `f`'s current action (ticks): what poses, trails and camera focus use. */
+export function actionTime(f: Fighter, w: World): number {
+  return f.act.t + (w.hitstop > 0 ? 0 : w.alpha);
 }
 
 const SPIN_START = (m: MoveDef) => m.startup - 3;
@@ -431,6 +437,13 @@ export class Animator {
   private victimT = 0;
   private deadClock = 0;
   private dtSim = 0;
+  /** Direction of the performer in the victim's frame, latched at contact (the fall never re-aims). */
+  private perfX = 0;
+  private perfZ = 1;
+  private perfLatched = false;
+  /** Fall direction of a normal death, latched from the killing blow. */
+  private fallX = 0;
+  private fallZ = 1;
   private readonly prevHand = new THREE.Vector3();
   private readonly handVel = new THREE.Vector3();
   private readonly entryVel = new THREE.Vector3();
@@ -503,9 +516,9 @@ export class Animator {
 
   update(f: Fighter, w: World, alpha: number, dtSim: number, root: THREE.Vector3, yaw: number): Pose {
     const a = f.act;
-    // The render interpolates toward the latest simulation tick; during hit-stop the world holds
-    // alpha, so the pose stays exactly on the contact frame instead of jumping back.
-    const t = a.t + alpha;
+    // Poses run on the action clock. During hit-stop they sit exactly on the tick that caused it
+    // (the contact key), whatever the interpolation phase of the frame was.
+    const t = a.t + (w.hitstop > 0 ? 0 : alpha);
     if (f.serial !== this.serial || a.kind !== this.kind) this.onActionStart(f);
     if (a.kind === 'gale') {
       const seg = Math.floor((a.t - 1) / GALE_TL.seg);
@@ -581,10 +594,15 @@ export class Animator {
       this.victimKind = a.finisher ?? 'slash';
       this.victimPerf = a.targetId ?? -1;
       this.victimT = 0;
+      this.perfLatched = false;
     }
     if (a.kind === 'dead') {
       clonePose(this.from, this.corpse);
       this.deadClock = 0;
+      // The body falls the way the killing blow pushed it (forward for burns / unknown causes).
+      const h = this.hit && this.hitAge < 0.5 ? this.hit : null;
+      this.fallX = h ? h.px : 0;
+      this.fallZ = h ? h.pz : 1;
     }
     // A spin that just finished: keep the root heading continuous (bodyYaw wraps to ~0).
     this.animPose.bodyYaw = this.from.bodyYaw;
@@ -600,10 +618,13 @@ export class Animator {
     const prof = profileFor(m);
     const pivot = prof.arc ? ARC_PIVOT : undefined;
     if (holdWindup) return clonePose(wind, out);
-    // Coiled windup: a touch past the windup, away from the strike (loads the release).
+    // Coiled windup: a touch past the windup, away from the strike (loads the release) — only
+    // when there is time to coil; otherwise the release starts from the windup itself.
     const coil = _k3;
-    lerpPose(strike, wind, 1.06, coil);
-    coil.torsoYaw = wind.torsoYaw + (wind.torsoYaw - strike.torsoYaw) * 0.08;
+    if (tl.release - tl.windupEnd >= 1) {
+      lerpPose(strike, wind, 1.06, coil);
+      coil.torsoYaw = wind.torsoYaw + (wind.torsoYaw - strike.torsoYaw) * 0.08;
+    } else clonePose(wind, coil);
 
     if (t < tl.windupEnd) {
       // Anticipation from wherever the body actually is (the previous move's end, a cancel, a
@@ -860,19 +881,24 @@ export class Animator {
 
   private victimPose(f: Fighter, w: World, t: number, kind: string, perfId: number, out: Pose): Pose {
     const survive = f.hp > 0;
-    // Where the performer is, in this victim's frame.
-    const perf = w.get(perfId);
-    let ax = 0;
-    let az = 1;
-    if (perf) {
-      const dx = perf.pos.x - f.pos.x;
-      const dz = perf.pos.z - f.pos.z;
-      const l = Math.hypot(dx, dz) || 1;
-      const c = Math.cos(f.yaw);
-      const s = Math.sin(f.yaw);
-      ax = (dx * c - dz * s) / l;
-      az = (dx * s + dz * c) / l;
+    // Where the performer is, in this victim's frame — latched when the blow lands so the fall
+    // (and the corpse) never re-aims at wherever the player walks afterwards.
+    const contactT = kind === 'issen' || kind === 'hajiki' || kind === 'standoff' ? ISSEN_TL.victimFreeze : FINISHER_TL[kind === 'thrust' || kind === 'flow' ? kind : 'slash'].contact;
+    if (!this.perfLatched) {
+      const perf = w.get(perfId);
+      if (perf) {
+        const dx = perf.pos.x - f.pos.x;
+        const dz = perf.pos.z - f.pos.z;
+        const l = Math.hypot(dx, dz) || 1;
+        const c = Math.cos(f.yaw);
+        const s = Math.sin(f.yaw);
+        this.perfX = (dx * c - dz * s) / l;
+        this.perfZ = (dx * s + dz * c) / l;
+      }
+      if (t >= contactT) this.perfLatched = true;
     }
+    const ax = this.perfX;
+    const az = this.perfZ;
 
     if (kind === 'issen' || kind === 'hajiki' || kind === 'standoff') {
       // Frozen mid-attack … then the cut registers.
@@ -945,10 +971,8 @@ export class Animator {
       return this.victimPose(f, w, this.victimT + this.deadClock * 60, this.victimKind, this.victimPerf, out);
     }
     const u = clamp01(f.deadTicks / 34);
-    // Falls the way the killing blow pushed it (forward for burns / unknown).
-    const h = this.hit && this.hitAge < 1.5 ? this.hit : null;
-    const fx = h ? h.px : 0;
-    const fz = h ? h.pz : 1;
+    const fx = this.fallX;
+    const fz = this.fallZ;
     const kneel = clonePose(this.kp(K.kneel), _k1);
     kneel.lean = 0.45 * fz;
     kneel.roll = -0.3 * fx;
@@ -1032,7 +1056,8 @@ export class Animator {
     const I = ISSEN_TL;
     const strike = this.kp(K.issenStrike);
     const zanshin = this.kp(K.issenZanshin);
-    if (t < I.contact) return lerpPoseParts(this.entry, strike, smooth((t / I.contact) * 1.4), powIn(t / I.contact, 1.3), powIn(t / I.contact, 2), out, ARC_PIVOT);
+    // The kill and its freeze land as the issen starts: the blade is already out (a flash cut).
+    if (t <= I.contact) return clonePose(strike, out);
     if (t < I.trail[1]) return lerpPoseParts(strike, zanshin, smooth((t - I.contact) / 3), easeOut((t - I.contact) / 4), easeOut((t - I.contact) / (I.trail[1] - I.contact)), out, ARC_PIVOT);
     if (t < dur - 10) return clonePose(zanshin, out);
     return lerpPose(zanshin, this.stance, smooth((t - dur + 10) / 10), out);
@@ -1114,13 +1139,19 @@ export class Animator {
       hx = strike.handR.x + L * 0.5;
       hz = D - 0.14 * sv - 0.33;
     }
-    _v1.set(hx - strike.handR.x, chestY - strike.handR.y, hz - strike.handR.z).multiplyScalar(wgt);
-    out.handR.add(_v1);
+    _v1.set(hx - strike.handR.x, chestY - strike.handR.y, hz - strike.handR.z);
+    // How far the body must lean / step in so the arm reaches the contact point — computed once
+    // from the contact target (not from the whipping hand), then eased in with the same weight.
+    _v2.copy(strike.handR).add(_v1);
+    const shift = reachShift(strike, _v2);
+    out.handR.addScaledVector(_v1, wgt);
+    out.pelvis.z += shift * wgt;
+    out.footL.z += shift * 1.1 * wgt;
+    out.lean += shift * 0.3 * wgt;
     if (kind === 'thrust') {
       _v2.set(L - out.handR.x, chestY + 0.02 - out.handR.y, D - out.handR.z).normalize();
       slerpDir(out.bladeR, _v2, wgt, out.bladeR);
     }
-    reachAssist(out, wgt);
   }
 
   // ── Locomotion & feet ─────────────────────────────────────────────────────
@@ -1150,7 +1181,8 @@ export class Animator {
   }
 
   private feetMode(f: Fighter, p: Pose): FeetMode {
-    if (Math.abs(p.bodyPitch) > 0.3 || Math.abs(p.bodyRoll) > 0.3) return 'air';
+    // Whole-body rotations are compared wrapped: the end of a 360° roll is upright again.
+    if (Math.abs(wrapAngle(p.bodyPitch)) > 0.3 || Math.abs(wrapAngle(p.bodyRoll)) > 0.3) return 'air';
     if (p.pelvis.y > this.stance.pelvis.y + 0.08) return 'air';
     const a = f.act;
     if (a.kind === 'attack' && a.move?.id === 'r_s4') {
@@ -1237,30 +1269,29 @@ export class Animator {
   private readonly params: StepParams = { threshold: 0.2, swingDur: 0.2, lift: 0.05, allowBoth: false, lead: 0, weight: 0.4 };
 }
 
-/** Move the pelvis (and the lead foot) toward the hand when the arm alone cannot reach it. */
-function reachAssist(p: Pose, wgt: number): void {
-  for (let it = 0; it < 2; it++) {
-    const yaw = p.pelvisYaw + p.torsoYaw;
-    const cy = Math.cos(yaw);
-    const sy = Math.sin(yaw);
-    const shx = -0.19;
-    const shz = 0.45 * Math.sin(p.lean);
-    const sx = p.pelvis.x + shx * cy + shz * sy;
-    const sz = p.pelvis.z - shx * sy + shz * cy;
-    const syy = p.pelvis.y + 0.45 * Math.cos(p.lean);
-    const dx = p.handR.x - sx;
-    const dy = p.handR.y - syy;
-    const dz = p.handR.z - sz;
-    const d = Math.hypot(dx, dy, dz);
-    const max = 0.56;
-    if (d <= max) return;
-    const h = Math.hypot(dx, dz) || 1;
-    const need = Math.min(0.3, d - max) * wgt;
-    p.pelvis.x += (dx / h) * need;
-    p.pelvis.z += (dz / h) * need;
-    p.footL.z += need * 1.1;
-    p.lean += need * 0.3;
-  }
+/**
+ * Forward (local z) shift of the pelvis needed for the right arm of pose `p` to reach `hand`.
+ * Only the horizontal shortfall is corrected (a hand too high or low is not "fixed" by lurching),
+ * and it is capped: this is a lean / step-in, never a change of the character's position.
+ */
+function reachShift(p: Pose, hand: THREE.Vector3): number {
+  const yaw = p.pelvisYaw + p.torsoYaw;
+  const cy = Math.cos(yaw);
+  const sy = Math.sin(yaw);
+  const shx = -0.19;
+  const shz = 0.45 * Math.sin(p.lean);
+  const sx = p.pelvis.x + shx * cy + shz * sy;
+  const sz = p.pelvis.z - shx * sy + shz * cy;
+  const syy = p.pelvis.y + 0.45 * Math.cos(p.lean);
+  const max = 0.56;
+  const dy = hand.y - syy;
+  if (Math.abs(dy) >= max) return 0;
+  const reachH = Math.sqrt(max * max - dy * dy);
+  const dx = hand.x - sx;
+  const dz = hand.z - sz;
+  // Shortfall along z, keeping the sideways offset.
+  const needZ = Math.sqrt(Math.max(0, reachH * reachH - dx * dx));
+  return Math.max(0, Math.min(0.2, dz - needZ));
 }
 
 function blendTime(kind: string): number {

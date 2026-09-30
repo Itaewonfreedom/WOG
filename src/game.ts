@@ -17,7 +17,7 @@ import { CameraRig } from './render/camera';
 import { Decals, makeGlintTexture, Puffs, Rings, Sparks, SwordTrail } from './render/fx';
 import { InputDevices } from './input/devices';
 import { TouchControls } from './input/touch';
-import { Sfx, type SfxName } from './audio/sfx';
+import { Sfx, type SfxHandle, type SfxName } from './audio/sfx';
 import { Hud } from './ui/hud';
 import { DEFAULT_SETTINGS, Menus, type Settings } from './ui/menus';
 
@@ -86,6 +86,8 @@ export class Game {
   /** Effects scheduled on simulation timelines (pause / slow-mo / restart safe). */
   private readonly cues: ActionCue[] = [];
   private cineSubjects: CineSubjects | null = null;
+  /** Whooshes started at a blow's release: cut short if the attacker is interrupted before contact. */
+  private readonly whooshes: { id: number; serial: number; contact: number; h: SfxHandle }[] = [];
   private clockWorld: World | null = null;
   private lastClock = 0;
   /** Contextual one-time lessons, shown the first time a situation comes up. */
@@ -173,6 +175,7 @@ export class Game {
     this.arrowMeshes.clear();
     this.hud.clear();
     this.cues.length = 0;
+    this.whooshes.length = 0;
     this.cineSubjects = null;
   }
 
@@ -517,6 +520,12 @@ export class Game {
 
   /** Fire effects that were scheduled on a fighter's action timeline. */
   private runCues(): void {
+    for (let i = this.whooshes.length - 1; i >= 0; i--) {
+      const s = this.whooshes[i];
+      const f = this.world.get(s.id);
+      if (!f || f.serial !== s.serial) s.h.stop();
+      if (!f || f.serial !== s.serial || f.act.t >= s.contact) this.whooshes.splice(i, 1);
+    }
     for (let i = this.cues.length - 1; i >= 0; i--) {
       const c = this.cues[i];
       const f = this.world.get(c.id);
@@ -620,14 +629,14 @@ export class Game {
     return v ? v.char.root.position.clone().setY(y) : V3(0, y, 0);
   }
 
-  private play(name: SfxName, pos?: THREE.Vector3, volume = 1, pitch = 1): void {
+  private play(name: SfxName, pos?: THREE.Vector3, volume = 1, pitch = 1): SfxHandle | null {
     if (!pos) return this.sfx.play(name, { volume, pitch });
     const cam = this.cam.camera;
     const rel = pos.clone().sub(cam.position);
     const d = rel.length();
     const right = V3(1, 0, 0).applyQuaternion(cam.quaternion);
     const pan = Math.max(-1, Math.min(1, rel.dot(right) / Math.max(1, d))) * 0.8;
-    this.sfx.play(name, { volume: volume / (1 + Math.max(0, d - 4) / 9), pan, pitch });
+    return this.sfx.play(name, { volume: volume / (1 + Math.max(0, d - 4) / 9), pan, pitch });
   }
 
   /** Directional hit reaction: push direction and the blade's sweep, in the target's frame. */
@@ -711,7 +720,9 @@ export class Game {
         const player = ev.id === pid;
         const m = ev.move;
         const name: SfxName = player ? (m.type === 'thrust' ? 'swingThrust' : m.heavy || m.finale ? 'swingHeavy' : m.type === 'blunt' ? 'dodge' : 'swingLight') : 'swingEnemy';
-        this.play(name, f ? this.at(f.id) : undefined, player ? 0.9 : 0.8, 0.9 + Math.random() * 0.2);
+        const h = this.play(name, f ? this.at(f.id) : undefined, player ? 0.9 : 0.8, 0.9 + Math.random() * 0.2);
+        // Released before contact (see timeline.ts): if the blow never lands, cut the whoosh.
+        if (h && f && f.act.kind === 'attack' && f.act.t < m.startup) this.whooshes.push({ id: f.id, serial: f.serial, contact: m.startup, h });
         break;
       }
       case 'hit': {

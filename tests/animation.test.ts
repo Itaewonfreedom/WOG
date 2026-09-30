@@ -394,7 +394,7 @@ describe('발 접지', () => {
       if (f.isPlayer && f.act.kind === 'attack') for (const l of v.anim.landings) if (l.foot === 0) landT.push(f.act.t);
     });
     const m = getMove('r_s1');
-    expect(landT.some((t) => Math.abs(t - m.startup) <= 1)).toBe(true);
+    expect(landT).toContain(m.startup);
   });
 });
 
@@ -753,6 +753,141 @@ describe('피니쉬 카메라', () => {
     expect(maxFov).toBeLessThan(1.5);
     // Back on the follow lens.
     expect(cam.camera.fov).toBeGreaterThan(56);
+  });
+});
+
+// ── 8. Review findings ──────────────────────────────────────────────────────
+describe('리뷰 회귀', () => {
+  function frozenHands(hz: number, phase: number, id: string) {
+    const { w, e } = duelWorld('dummy', 2.2);
+    e.hp = 9999;
+    e.maxHp = 9999;
+    e.maxPosture = 9999;
+    const sim = new Sim(w, hz);
+    // Shift the frame phase against the 60 Hz tick.
+    w.update(phase / 60, emptyInput());
+    sim.run(2);
+    sim.tap(getMove(id).type === 'thrust' ? 'thrust' : 'slash');
+    const out: THREE.Vector3[] = [];
+    sim.run(Math.round(hz * 0.6), (f, _v, pose) => {
+      if (f.isPlayer && w.hitstop > 0 && f.act.kind === 'attack') out.push(pose.handR.clone());
+    });
+    return out;
+  }
+
+  it('히트스톱 동안의 포즈는 프레임 위상·주사율과 무관하게 정확히 타격 키다', () => {
+    for (const id of ['r_s1', 'r_t1']) {
+      const strike = stanceKeyPose('player', __animTest.RANGER[id].strike);
+      for (const hz of [30, 60, 75, 144]) {
+        for (const phase of [0, 0.3, 0.7]) {
+          const hands = frozenHands(hz, phase, id);
+          expect(hands.length, `${id} ${hz}Hz φ${phase}`).toBeGreaterThan(0);
+          for (const h of hands) expect(h.distanceTo(strike.handR), `${id} ${hz}Hz φ${phase}`).toBeLessThan(0.01);
+        }
+      }
+    }
+  });
+
+  it('일섬: 처치·히트스톱 프레임의 자세가 일섬 타격 키다', () => {
+    const { w, e } = duelWorld('ronin', 2.0);
+    const sim = new Sim(w, 60);
+    sim.run(2);
+    doIssen(w, w.player, e, false);
+    const strike = stanceKeyPose('player', { hand: [-0.1, 1.1, 0.5], blade: [0.2, -0.1, 1], edge: [0, 1, 0], torso: 0.1, lean: 0.35, pelvisY: 0.8, step: 0.45 });
+    let n = 0;
+    sim.run(20, (f, _v, pose) => {
+      if (f.isPlayer && w.hitstop > 0) {
+        expect(pose.handR.distanceTo(strike.handR)).toBeLessThan(0.02);
+        n++;
+      }
+    });
+    expect(n).toBeGreaterThan(3);
+  });
+
+  it('쓰러진 시체는 플레이어가 주위를 돌아도, 시간이 지나도 자세가 바뀌지 않는다', () => {
+    for (const mode of ['finisher', 'kill'] as const) {
+      const { w, e } = duelWorld('ronin', 2.0);
+      const sim = new Sim(w, 60);
+      sim.run(2);
+      if (mode === 'finisher') {
+        e.set('broken', 400);
+        startFinisher(w, w.player, e, 'thrust');
+      } else {
+        e.hp = 1;
+        sim.tap('slash');
+      }
+      sim.run(200);
+      expect(e.act.kind).toBe('dead');
+      const ref = JSON.parse(JSON.stringify(sim.view(e).anim.pose)) as Pose;
+      let maxD = 0;
+      for (const [x, z] of [[2, 0], [0, 4], [-2, 2], [1, -1]]) {
+        w.player.pos = { x, z };
+        w.player.prevPos = { x, z };
+        sim.run(40, (f, _v, pose) => {
+          if (f.id === e.id) maxD = Math.max(maxD, Math.abs(pose.bodyPitch - ref.bodyPitch) + Math.abs(pose.bodyRoll - ref.bodyRoll));
+        });
+      }
+      expect(maxD, mode).toBeLessThan(1e-6);
+    }
+  });
+
+  it('반격으로 밀려난 적에게 피니쉬: 피해자는 제자리에 붙잡혀 contact 거리가 유지된다', () => {
+    for (const kind of ['slash', 'thrust'] as const) {
+      const { w, d, p, e } = duel('ronin', 2.0);
+      e.set('broken', 400);
+      e.kb = { x: 0, z: 4.5 };
+      startFinisher(w, p, e, kind);
+      let dist = -1;
+      for (let i = 0; i < 60 && dist < 0; i++) {
+        d.step();
+        if (d.events.some((ev) => ev.type === 'finisherImpact')) dist = Math.hypot(e.pos.x - p.pos.x, e.pos.z - p.pos.z);
+      }
+      expect(dist, kind).toBeCloseTo(FINISHER_TL[kind].stand + e.radius * 0.6, 1);
+    }
+  });
+
+  it('구르기가 끝나면(360° 회전 후 직립) 발이 다시 땅을 딛고 착지 이벤트가 난다', () => {
+    const w = soloWorld();
+    const sim = new Sim(w, 60);
+    sim.move = { x: 0, z: 1 };
+    sim.run(5);
+    sim.tap('dodge');
+    sim.run(3);
+    sim.tap('dodge');
+    let rolled = false;
+    let landedAfterRoll = false;
+    sim.run(50, (f, v, pose) => {
+      if (!f.isPlayer) return;
+      if (f.act.kind === 'dodge' && Math.abs(pose.bodyPitch) > 3) rolled = true;
+      if (rolled && v.anim.landings.length) landedAfterRoll = true;
+    });
+    expect(rolled).toBe(true);
+    expect(landedAfterRoll).toBe(true);
+  });
+
+  it('질풍참·허초: coil 구간이 없어도 손이 한 번에 튀지 않는다', () => {
+    for (const [kind, id] of [['player', 'r_gale'], ['ronin', 'ro_feint']] as const) {
+      const w = soloWorld();
+      const e = w.spawn('ronin', { x: 0, z: 3 }, Math.PI);
+      e.brain!.aware = false;
+      const f = kind === 'player' ? w.player : e;
+      const anim = new Animator(kind);
+      if (id === 'r_gale') f.set('gale', 45, {});
+      else f.set('attack', 40, { move: getMove(id) });
+      const root = new THREE.Vector3();
+      let last: THREE.Vector3 | null = null;
+      let maxStep = 0;
+      // Fine sampling: fast but continuous motion moves < 1 cm per 0.01 tick; a pop does not.
+      for (let i = 0; i <= 3000; i++) {
+        const t = i / 100;
+        f.act.t = Math.floor(t);
+        w.alpha = t - Math.floor(t);
+        const pose = anim.update(f, w, w.alpha, 0.01 / 60, root, 0);
+        if (last) maxStep = Math.max(maxStep, pose.handR.distanceTo(last));
+        last = pose.handR.clone();
+      }
+      expect(maxStep, id).toBeLessThan(0.015);
+    }
   });
 });
 

@@ -659,6 +659,9 @@ export function startFinisher(w: World, p: Fighter, e: Fighter, kind: 'slash' | 
   const stand = tl.stand + e.radius * 0.6;
   const to = sub(e.pos, scale(dir, stand));
   p.set('finisher', dur, { finisher: kind, targetId: e.id, from: { ...p.pos }, to, travel: tl.dash });
+  // The victim is held in place: leftover knock-back would slide it out of the contact distance.
+  e.kb = { x: 0, z: 0 };
+  e.vel = { x: 0, z: 0 };
   p.yaw = toYaw(dir);
   e.set('finished', tl.victimDur, { finisher: kind, targetId: p.id });
   e.glint = null;
@@ -737,10 +740,9 @@ export function stepGale(w: World, f: Fighter): void {
   const seg = Math.floor((a.t - 1) / GALE_SEG);
   const local = (a.t - 1) % GALE_SEG;
   const tgt = w.get(w.ps.galeTargets[seg]);
-  if (local === GALE_TL.contact && tgt && tgt.targetable) {
-    w.emit({ type: 'swing', id: f.id, move: MOVES.r_gale });
-    resolveOnEnemy(w, f, tgt, MOVES.r_gale);
-  }
+  // Whoosh as the blade is released, the cut lands on the contact tick (timeline.ts).
+  if (local === GALE_TL.contact - 2 && tgt && tgt.targetable) w.emit({ type: 'swing', id: f.id, move: MOVES.r_gale });
+  if (local === GALE_TL.contact && tgt && tgt.targetable) resolveOnEnemy(w, f, tgt, MOVES.r_gale);
 }
 
 function midpoint(a: Fighter, b: Fighter): Vec2 {
