@@ -135,7 +135,7 @@ function soloWorld(): World {
   return w;
 }
 
-function duelWorld(arch: 'dummy' | 'ronin' | 'armored' | 'spear', dist: number): { w: World; e: Fighter } {
+function duelWorld(arch: 'dummy' | 'ronin' | 'armored' | 'spear' | 'shield', dist: number): { w: World; e: Fighter } {
   const w = soloWorld();
   const e = w.spawn(arch, { x: 0, z: dist }, Math.PI);
   e.brain!.aware = false;
@@ -719,12 +719,12 @@ describe('트레일 · 프레임 독립', () => {
         base.set(x, 1.2, 0);
         tip.set(x + Math.sin(a) * 0.7, 1.2, Math.cos(a) * 0.7);
         tr.update(base, tip, true, i === 0 ? 0 : 1 / hz, 1);
-        // A quad spanning more than 1 m of base travel is a bridge across the dash.
+        // No drawn cross-section may lie on the dash itself (base strictly between start and end).
         const pos = (tr.mesh.geometry.getAttribute('position') as THREE.BufferAttribute).array as Float32Array;
         const idx = (tr.mesh.geometry.getIndex() as THREE.BufferAttribute).array as Uint16Array;
-        for (let k = 0; k < tr.drawnIndices; k += 3) {
-          const xs = [idx[k], idx[k + 1], idx[k + 2]].map((v) => pos[v * 3]);
-          if (Math.max(...xs) - Math.min(...xs) > 1) bridged++;
+        for (let k = 0; k < tr.drawnIndices; k++) {
+          const v = idx[k];
+          if (v % 2 === 0 && pos[v * 3] > 0.1 && pos[v * 3] < 2.65) bridged++;
         }
       }
       return { bridged, drawn: tr.drawnIndices };
@@ -746,16 +746,18 @@ describe('트레일 · 프레임 독립', () => {
     expect(one).toBeGreaterThan(0);
     // Next strike starts far away one frame later.
     tr.update(base.set(3, 1, 0), tip.set(3, 1, 1), true, 1 / 60, 2);
-    // Every drawn quad must join two cross-sections that are close to each other.
+    tr.update(base.set(3.05, 1, 0), tip.set(3.3, 1, 1), true, 1 / 60, 2);
+    // No drawn triangle may join the first strike (base x < 1) with the second (base x > 2).
     const pos = (tr.mesh.geometry.getAttribute('position') as THREE.BufferAttribute).array as Float32Array;
     const idx = (tr.mesh.geometry.getIndex() as THREE.BufferAttribute).array as Uint16Array;
+    let joined = 0;
     for (let i = 0; i < tr.drawnIndices; i += 3) {
-      const [a, b, c] = [idx[i], idx[i + 1], idx[i + 2]];
-      const pa = new THREE.Vector3().fromArray(pos, a * 3);
-      const pb = new THREE.Vector3().fromArray(pos, b * 3);
-      const pc = new THREE.Vector3().fromArray(pos, c * 3);
-      expect(Math.max(pa.distanceTo(pb), pb.distanceTo(pc), pa.distanceTo(pc))).toBeLessThan(1.6);
+      const xs = [idx[i], idx[i + 1], idx[i + 2]].map((v) => pos[(v - (v % 2)) * 3]);
+      if (Math.min(...xs) < 1 && Math.max(...xs) > 2) joined++;
     }
+    expect(joined).toBe(0);
+    // The second strike does draw its own ribbon.
+    expect(tr.drawnIndices).toBeGreaterThan(0);
   });
 
   it('히트스톱이 시작되는 프레임에도 그때까지 흐른 시뮬레이션 시간이 반영돼 트레일이 접촉 지점을 담는다', () => {
@@ -793,8 +795,7 @@ describe('트레일 · 프레임 독립', () => {
     expect(checked).toBe(true);
   });
 
-  it('히트스톱 길이는 프레임 위상과 무관하게 정확히 k틱이고, 풀릴 때 포즈가 튀지 않는다', () => {
-    const holds: number[] = [];
+  it('히트스톱: 화면은 접촉 틱까지 이어서 움직인 뒤 정확히 k틱 멈추고, 멈출 때·풀릴 때 포즈가 튀지 않는다', () => {
     for (const phase of [0.05, 0.3, 0.6, 0.9]) {
       const { w, e } = duelWorld('dummy', 2.0);
       e.hp = 9999;
@@ -804,34 +805,41 @@ describe('트레일 · 프레임 독립', () => {
       w.update(phase / 60, emptyInput());
       sim.run(20);
       sim.tap('slash');
-      let frozen = 0;
       let k = 0;
-      let lastT = -1;
-      let maxPoseStep = 0;
-      let lastClock = w.simClock;
-      for (let i = 0; i < 600; i++) {
-        sim.frame();
-        const f = w.player;
-        if (w.hitstop > 0) {
-          frozen++;
-          k = Math.max(k, w.hitstop);
+      let heldAt = -1;
+      let hold = 0;
+      let lastShown = -Infinity;
+      let minStep = Infinity;
+      let maxHandStep = 0;
+      const last = new THREE.Vector3();
+      let have = false;
+      for (let i = 0; i < 900; i++) {
+        let pose: Pose | null = null;
+        sim.frame((f, v) => {
+          if (f.isPlayer) pose = v.anim.rawPose;
+        });
+        const shown = w.displayTick;
+        minStep = Math.min(minStep, shown - lastShown);
+        lastShown = shown;
+        if (w.hitstop > 0) k = Math.max(k, w.hitstop);
+        if (w.hitstop > 0 && w.alpha >= 1) heldAt = shown;
+        if (heldAt >= 0 && Math.abs(shown - heldAt) < 1e-9) hold++;
+        const p = pose as Pose | null;
+        if (p && w.player.act.kind === 'attack') {
+          if (have) maxHandStep = Math.max(maxHandStep, p.handR.distanceTo(last));
+          last.copy(p.handR);
+          have = true;
         }
-        if (f.act.kind === 'attack') {
-          const t = f.act.t - 1 + w.alpha;
-          const dClock = (w.simClock - lastClock) * 60;
-          if (lastT >= 0) maxPoseStep = Math.max(maxPoseStep, t - lastT - dClock);
-          lastT = t;
-        }
-        lastClock = w.simClock;
-        if (frozen > 0 && w.hitstop === 0 && f.act.kind !== 'attack') break;
+        if (heldAt >= 0 && w.hitstop === 0 && w.player.act.kind !== 'attack') break;
       }
-      holds.push(frozen / 10); // frames of 1/600 s → ticks of 1/60 s
-      // Pose time never runs ahead of the presentation clock (no jump when the freeze ends).
-      expect(maxPoseStep, `phase ${phase}`).toBeLessThan(1e-6);
-      void k;
+      // The displayed moment never goes back…
+      expect(minStep, `phase ${phase}`).toBeGreaterThanOrEqual(-1e-9);
+      // …the impact frame is held for exactly k ticks (600 Hz frames: ±1 frame)…
+      expect(Math.abs(hold / 10 - k), `phase ${phase}`).toBeLessThanOrEqual(0.11);
+      // …and at 600 Hz the pose moves continuously through the freeze start and end: even the
+      // whip into contact stays far below one tick of motion per 1/600 s frame (no pop).
+      expect(maxHandStep, `phase ${phase}`).toBeLessThan(0.1);
     }
-    // Same hold at every phase (within one 1/600 s frame).
-    expect(Math.max(...holds) - Math.min(...holds)).toBeLessThanOrEqual(0.1 + 1e-9);
   });
 
   it('히트스톱 중 위치 보간(alpha)이 흔들리지 않는다', () => {
@@ -952,7 +960,8 @@ describe('리뷰 회귀', () => {
     const out: THREE.Vector3[] = [];
     sim.run(Math.round(hz * 0.6), (f, v) => {
       // The timeline pose (before the feet lower the body to fit the stance).
-      if (f.isPlayer && w.hitstop > 0 && f.act.kind === 'attack') out.push(v.anim.rawPose.handR.clone());
+      // Hit-stop holds the impact frame (the display has reached the contact tick: alpha = 1).
+      if (f.isPlayer && w.hitstop > 0 && w.alpha >= 1 && f.act.kind === 'attack') out.push(v.anim.rawPose.handR.clone());
     });
     return out;
   }
@@ -978,7 +987,7 @@ describe('리뷰 회귀', () => {
     const strike = stanceKeyPose('player', { hand: [-0.1, 1.1, 0.5], blade: [0.2, -0.1, 1], edge: [0, 1, 0], torso: 0.1, lean: 0.35, pelvisY: 0.8, step: 0.45 });
     let n = 0;
     sim.run(20, (f, v) => {
-      if (f.isPlayer && w.hitstop > 0) {
+      if (f.isPlayer && w.hitstop > 0 && w.alpha >= 1) {
         expect(v.anim.rawPose.handR.distanceTo(strike.handR)).toBeLessThan(0.02);
         n++;
       }
@@ -1115,6 +1124,251 @@ describe('시네마틱 · 재타격', () => {
     expect(d.events.filter((ev) => ev.type === 'hit' && ev.target === e.id).length).toBe(hitsBefore);
     expect(w.stats.kills).toBe(1);
     expect(d.count('kill')).toBe(1);
+  });
+});
+
+// ── 9. Review round 2 ───────────────────────────────────────────────────────
+describe('리뷰 회귀 2', () => {
+  function holdFrames(setup: (w: World, sim: Sim, e: Fighter) => void, who: (w: World, e: Fighter) => Fighter, arch: 'ronin' | 'shield', hz = 60) {
+    const { w, e } = duelWorld(arch, 2.2);
+    const sim = new Sim(w, hz);
+    sim.run(3);
+    setup(w, sim, e);
+    const hands: THREE.Vector3[] = [];
+    sim.run(Math.round(hz * 1.2), (f, v) => {
+      if (f === who(w, e) && w.hitstop > 0 && w.alpha >= 1) hands.push(v.anim.rawPose.handR.clone());
+    });
+    return hands;
+  }
+
+  it('튕기기·흘리기·방패에 튕김: 공격이 막혀 동작이 바뀌어도 히트스톱 동안 공격자는 타격 키다', () => {
+    const ro = getMove('ro_cut2');
+    const roStrike = stanceKeyPose('ronin', __animTest.swingFor('katana', ro)!.strike);
+    // Deflect (buckler right before the blow) and flow (buckler + dodge).
+    for (const kind of ['deflect', 'flow'] as const) {
+      const hands = holdFrames(
+        (w, sim, e) => {
+          startEnemyAttack(w, e, ro);
+          e.brain!.aware = false;
+          sim.run(ro.startup - 5);
+          sim.press('guard');
+          if (kind === 'flow') {
+            sim.frame();
+            sim.tap('dodge');
+          }
+        },
+        (_w, e) => e,
+        'ronin',
+      );
+      expect(hands.length, kind).toBeGreaterThan(0);
+      // The attacker was replaced on its contact tick (recoil / overextended) — its first held
+      // frame is still the blow at contact.
+      expect(hands[0].distanceTo(roStrike.handR), kind).toBeLessThan(0.02);
+    }
+    // The player's slash bounced off a shield.
+    const s1 = getMove('r_s1');
+    const strike = stanceKeyPose('player', __animTest.RANGER.r_s1.strike);
+    const hands = holdFrames((_w, sim) => sim.tap('slash'), (w) => w.player, 'shield');
+    expect(hands.length).toBeGreaterThan(0);
+    expect(hands[0].distanceTo(strike.handR)).toBeLessThan(0.02);
+    void s1;
+  });
+
+  it('피격·사운드 이벤트의 틱 = 화면이 접촉 틱을 보여주는 순간', () => {
+    const { w, e } = duelWorld('dummy', 2.2);
+    e.hp = 9999;
+    e.maxHp = 9999;
+    e.maxPosture = 9999;
+    const sim = new Sim(w, 60);
+    sim.run(2);
+    const strike = stanceKeyPose('player', __animTest.RANGER.r_s1.strike);
+    sim.tap('slash');
+    let hitTick = -1;
+    let checked = false;
+    for (let i = 0; i < 40 && !checked; i++) {
+      const n0 = sim.events.length;
+      sim.frame((f, v) => {
+        if (!f.isPlayer) return;
+        // The frame the game would dispatch the hit (display reached the event's tick) shows the strike key.
+        if (hitTick >= 0 && w.displayTick >= hitTick - 1e-6) {
+          expect(v.anim.rawPose.handR.distanceTo(strike.handR)).toBeLessThan(0.02);
+          checked = true;
+        }
+      });
+      if (hitTick < 0 && sim.events.slice(n0).some((x) => x.ev.type === 'hit')) hitTick = w.tick;
+    }
+    expect(checked).toBe(true);
+  });
+
+  it('활: 화살이 날아가는 프레임에 시위에 걸린 화살이 동시에 보이지 않는다', () => {
+    const w = soloWorld();
+    const e = w.spawn('archer', { x: 0, z: 12 }, Math.PI);
+    e.brain!.aware = false;
+    e.brain!.cooldown = 1e9;
+    const sim = new Sim(w, 144);
+    sim.run(3);
+    const shot = getMove('ac_shot');
+    startEnemyAttack(w, e, shot);
+    e.brain!.aware = false;
+    let both = 0;
+    sim.run(Math.round(((shot.startup + 10) / 60) * 144), (f, v) => {
+      if (f.id !== e.id) return;
+      if (w.projectiles.some((pr) => pr.ownerId === e.id && pr.alive && !pr.stuck) && v.anim.rawPose.bowDraw > 0.3) both++;
+    });
+    expect(both).toBe(0);
+  });
+
+  it('일반 사망 쓰러짐은 슬로모·고주사율에서도 매 프레임 부드럽게 진행된다', () => {
+    const { w, e } = duelWorld('ronin', 2.0);
+    e.hp = 1;
+    const sim = new Sim(w, 144);
+    sim.run(3);
+    sim.tap('slash');
+    w.slowmo(0.22, 5);
+    let frames = 0;
+    let still = 0;
+    let last = -1;
+    let lastSig = 0;
+    sim.run(400, (f, v) => {
+      if (f.id !== e.id || f.act.kind !== 'dead') return;
+      const q = v.anim.rawPose;
+      const p = q.pelvis.y;
+      // Whole-body signature (the pelvis alone may rest a beat at the kneel while the torso tips).
+      const sig = p + q.lean + q.roll + q.handR.x + q.handR.y + q.handR.z + q.headPitch;
+      // The kill's hit-stop holds the whole frame on purpose; the fall must move on every other frame.
+      if (last >= 0 && p > 0.25 && w.hitstop === 0) {
+        frames++;
+        if (Math.abs(sig - lastSig) < 1e-7) still++;
+      }
+      last = p;
+      lastSig = sig;
+    });
+    expect(frames).toBeGreaterThan(20);
+    expect(still).toBe(0);
+  });
+
+  it('튕기기 일섬: 멈춘 순간 일섬 주인공은 아직 제자리(돌진은 멈춤이 풀린 뒤)', () => {
+    const { w, e } = duelWorld('ronin', 2.2);
+    const sim = new Sim(w, 60);
+    sim.run(3);
+    const z0 = w.player.pos.z;
+    doIssen(w, w.player, e, true);
+    // Emulate the input path: the next tick's action pass runs with the issen already set.
+    sim.frame();
+    let moved = 0;
+    sim.run(20, (f) => {
+      if (f.isPlayer && w.hitstop > 0) moved = Math.max(moved, Math.abs(f.pos.z - z0));
+    });
+    expect(moved).toBeLessThan(1e-6);
+  });
+
+  it('카메라: 일시정지 중에는 시네마틱 안전 타이머가 흐르지 않는다', () => {
+    const cam = new CameraRig(16 / 9);
+    const a = new THREE.Vector3(0, 0, 0);
+    const b = new THREE.Vector3(0, 0, 2);
+    const opts = { aiming: false, lockTarget: null, crowd: 0, moveDir: null, slowmo: false };
+    cam.cinematic(a, b, 'finisher', 1, 2);
+    cam.track(a, b, null, 0, 0.2);
+    for (let i = 0; i < 600; i++) cam.update(0, a, opts); // 10 s paused
+    expect(cam.inCinematic).toBe(true);
+    for (let i = 0; i < 200; i++) {
+      cam.track(a, b, null, 0, 0.2);
+      cam.update(1 / 60, a, opts);
+    }
+    expect(cam.inCinematic).toBe(false); // the safety net still works once time runs
+  });
+
+  it('카메라: 초점이 없을 때도 샷은 움직이는 두 인물의 중점을 따라간다', () => {
+    const cam = new CameraRig(16 / 9);
+    const perf = new THREE.Vector3(0, 0, 0);
+    const vic = new THREE.Vector3(0, 0, 4);
+    const opts = { aiming: false, lockTarget: null, crowd: 0, moveDir: null, slowmo: false };
+    cam.cinematic(perf, vic, 'finisher', 5, 5);
+    for (let i = 0; i < 90; i++) {
+      perf.z = Math.min(3, perf.z + 0.05); // performer dashes in; no focus weight
+      cam.track(perf, vic, null, 0, i / 180);
+      cam.update(1 / 60, perf, opts);
+    }
+    const dir = new THREE.Vector3();
+    cam.camera.getWorldDirection(dir);
+    const p = cam.camera.position;
+    const live = perf.clone().add(vic).multiplyScalar(0.5).setY(1.1).sub(p).normalize();
+    const stale = new THREE.Vector3(0, 1.1, 2).sub(p).normalize();
+    expect(dir.angleTo(live)).toBeLessThan(0.05);
+    expect(dir.angleTo(stale)).toBeGreaterThan(0.1);
+  });
+
+  it('발: 달리다 공격하면 디딤발이 스케이트 없이 contact 무렵 디딘다', () => {
+    for (const hz of [60, 144]) {
+      const { w, e } = duelWorld('dummy', 8);
+      e.hp = 9999;
+      e.maxHp = 9999;
+      e.maxPosture = 9999;
+      const sim = new Sim(w, hz);
+      sim.move = { x: 0, z: 1 };
+      sim.run(Math.round(0.35 * hz));
+      sim.move = { x: 0, z: 0 };
+      sim.tap('slash');
+      let skid = 0;
+      const prev = new THREE.Vector3();
+      let have = false;
+      sim.run(Math.round(0.4 * hz), (f, v) => {
+        if (!f.isPlayer) return;
+        const L = footWorld(v.char, 'L');
+        if (have && L.y < 0.005 && prev.y < 0.005) skid = Math.max(skid, Math.hypot(L.x - prev.x, L.z - prev.z));
+        prev.copy(L);
+        have = true;
+      });
+      expect(skid, `${hz}Hz`).toBeLessThan(0.02);
+    }
+  });
+
+  it('발: 달리다 급반전해도 디딘 발이 몸과 반대로 꺾인 채 남지 않는다', () => {
+    const w = soloWorld();
+    const sim = new Sim(w, 60);
+    sim.move = { x: 0, z: 1 };
+    sim.run(40);
+    sim.move = { x: 0, z: -1 };
+    let worst = 0;
+    sim.run(40, (f, v) => {
+      if (!f.isPlayer) return;
+      const p = v.anim.pose;
+      for (const i of [0, 1] as const) if (v.anim.planter.isPlanted(i)) worst = Math.max(worst, Math.abs(i === 0 ? p.footYawL : p.footYawR));
+    });
+    expect(worst).toBeLessThan(1.75);
+  });
+
+  it('발: 첫 발은 주사율과 무관하게 같은 발이다', () => {
+    const first = [30, 60, 120, 144, 240].map((hz) => {
+      const w = soloWorld();
+      const sim = new Sim(w, hz);
+      sim.run(3);
+      sim.move = { x: 0, z: 1 };
+      let foot = -1;
+      sim.run(hz, (f, v) => {
+        if (f.isPlayer && foot < 0 && v.anim.landings.length) foot = v.anim.landings[0].foot;
+      });
+      return foot;
+    });
+    expect(new Set(first).size).toBe(1);
+  });
+
+  it('활 조준 중 옆걸음: 활 든 손 높이가 흔들리지 않는다', () => {
+    const w = soloWorld();
+    const sim = new Sim(w, 144);
+    sim.run(3);
+    sim.press('aim');
+    sim.run(40);
+    sim.move = { x: 1, z: 0 };
+    let lo = Infinity;
+    let hi = -Infinity;
+    sim.run(200, (f, v) => {
+      if (!f.isPlayer) return;
+      const y = v.char.jHandL.y;
+      lo = Math.min(lo, y);
+      hi = Math.max(hi, y);
+    });
+    expect(hi - lo).toBeLessThan(0.02);
   });
 });
 

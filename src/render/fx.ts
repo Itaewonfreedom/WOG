@@ -35,6 +35,7 @@ export class SwordTrail {
   private now = 0;
   private segId = 0;
   private wasActive = false;
+  private dashing = false;
   private lastKey = Number.NaN;
   private readonly pos: Float32Array;
   private readonly alpha: Float32Array;
@@ -91,7 +92,10 @@ export class SwordTrail {
   update(base: THREE.Vector3, tip: THREE.Vector3, active: boolean, dt: number, key = 0, maxSpeed = 45): void {
     this.now += dt;
     if (active) {
-      if (!this.wasActive || key !== this.lastKey) this.segId++;
+      if (!this.wasActive || key !== this.lastKey) {
+        this.segId++;
+        this.dashing = false;
+      }
       const newest = this.count > 0 ? this.head : -1;
       const sameSeg = newest >= 0 && this.sseg[newest] === this.segId;
       // Frozen time adds nothing (no stacked duplicates during hit-stop / pause).
@@ -102,7 +106,11 @@ export class SwordTrail {
           const jump = Math.hypot(base.x - this.sb[i], base.y - this.sb[i + 1], base.z - this.sb[i + 2]);
           const since = this.now - this.stime[newest];
           const prev = this.count > 1 ? this.idx(1) : -1;
-          if (jump > maxSpeed * Math.max(since, 1 / 240)) this.segId++;
+          // Hysteresis: once in a dash, keep splitting until the base is clearly slow again (a frame
+          // that straddles the end of the dash averages a lower speed at low refresh rates).
+          const speed = jump / Math.max(since, 1 / 240);
+          this.dashing = speed > (this.dashing ? maxSpeed * 0.5 : maxSpeed);
+          if (this.dashing) this.segId++;
           // Keep samples at least TRAIL_MIN_DT apart: move the newest one while it is still too
           // close to the one before it (never replace the only sample of a ribbon).
           else if (prev >= 0 && this.sseg[prev] === this.segId && this.now - this.stime[prev] < TRAIL_MIN_DT) replace = true;

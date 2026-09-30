@@ -6,7 +6,7 @@ import type { ArchetypeId, CombatEvent, FinisherKind, Projectile } from './core/
 import { T } from './core/tuning';
 import { drawInfo } from './core/bow';
 import { MOVES } from './core/moves';
-import { FINISHER_TL, GALE_TL, ISSEN_TL, galeLocal } from './core/timeline';
+import { FINISHER_TL, GALE_TL, ISSEN_TL, galeLocal, releaseTicks } from './core/timeline';
 import { emptyInput } from './core/input';
 import { startEnemyAttack } from './core/ai';
 import { createEnvironment, type Environment } from './render/environment';
@@ -87,7 +87,9 @@ export class Game {
   private readonly cues: ActionCue[] = [];
   private cineSubjects: CineSubjects | null = null;
   /** Whooshes started at a blow's release: cut short if the attacker is interrupted before contact. */
-  private readonly whooshes: { id: number; serial: number; contact: number; h: SfxHandle }[] = [];
+  private readonly whooshes: { id: number; serial: number; contactTick: number; h: SfxHandle }[] = [];
+  /** Combat events waiting for the displayed moment to reach the tick they happened on. */
+  private readonly eventQueue: { ev: CombatEvent; tick: number }[] = [];
   private clockWorld: World | null = null;
   private lastClock = 0;
   /** Contextual one-time lessons, shown the first time a situation comes up. */
@@ -176,6 +178,7 @@ export class Game {
     this.hud.clear();
     this.cues.length = 0;
     this.whooshes.length = 0;
+    this.eventQueue.length = 0;
     this.cineSubjects = null;
   }
 
@@ -217,6 +220,7 @@ export class Game {
 
   private toTitle(): void {
     this.state = 'title';
+    this.cam.endCinematic();
     this.world = this.makeTitleWorld();
     this.menus.showTitle();
     this.menus.showPractice(false);
@@ -319,7 +323,14 @@ export class Game {
       w.update(dt, { ...frame, pressed: {}, released: {}, held: {} });
     }
 
-    for (const ev of w.drainEvents()) this.onEvent(ev);
+    // Presentation events (sound, sparks, shake, reactions, camera) play when the displayed moment
+    // reaches the tick they happened on — the same moment the poses show it (≤ 1 tick later).
+    for (const e of w.drainTimedEvents()) this.eventQueue.push(e);
+    const shown = w.displayTick + 1e-6;
+    while (this.eventQueue.length && this.eventQueue[0].tick <= shown) {
+      const e = this.eventQueue.shift()!;
+      this.onEvent(e.ev, e.tick);
+    }
 
     if (this.resultTimer > 0 && (this.resultTimer -= dt) <= 0) {
       this.state = 'result';
@@ -360,7 +371,7 @@ export class Game {
         if (leader && pv) this.cam.cinematic(focus, this.views.get(leader.id)?.char.root.position ?? focus, 'standoff', 0.2);
       }
       this.trackCinematic();
-      this.cam.update(dt, focus, { aiming: w.player.is('aim'), lockTarget: lockPos, crowd, moveDir: mv, slowmo: w.timeScale < 0.9 });
+      this.cam.update(this.state === 'pause' ? 0 : dt, focus, { aiming: w.player.is('aim'), lockTarget: lockPos, crowd, moveDir: mv, slowmo: w.timeScale < 0.9 });
     }
     if (this.debugCam) {
       const c = this.cam.camera;
@@ -502,7 +513,7 @@ export class Game {
     }
     const active = !!win && t >= win[0] && t < win[1];
     // The issen's pass-through streak is the point of the move; other dashes split the ribbon.
-    const maxSpeed = a.kind === 'issen' ? Infinity : 45;
+    const maxSpeed = a.kind === 'issen' || a.kind === 'gale' ? Infinity : 45;
     v.trail.setColor(color, intensity);
     v.char.bladeWorld(_base, _tip);
     v.trail.update(_base, _tip, active, dt, key, maxSpeed);
@@ -525,8 +536,9 @@ export class Game {
     for (let i = this.whooshes.length - 1; i >= 0; i--) {
       const s = this.whooshes[i];
       const f = this.world.get(s.id);
-      if (!f || f.serial !== s.serial) s.h.stop();
-      if (!f || f.serial !== s.serial || f.act.t >= s.contact) this.whooshes.splice(i, 1);
+      // Interrupted before its contact tick (the new action started earlier): the blow never came.
+      if (!f || (f.serial !== s.serial && this.world.tick - f.act.t < s.contactTick)) s.h.stop();
+      if (!f || f.serial !== s.serial || this.world.tick >= s.contactTick) this.whooshes.splice(i, 1);
     }
     for (let i = this.cues.length - 1; i >= 0; i--) {
       const c = this.cues[i];
@@ -535,7 +547,7 @@ export class Game {
         this.cues.splice(i, 1);
         continue;
       }
-      if (f.act.t >= c.t) {
+      if (actionTime(f, this.world) >= c.t) {
         this.cues.splice(i, 1);
         c.fire();
       }
@@ -551,6 +563,12 @@ export class Game {
     const pb = w.get(cs.b);
     const va = pa ? this.views.get(pa.id) : undefined;
     const vb = pb ? this.views.get(pb.id) : undefined;
+    // Only steer a shot this tracker owns.
+    const owns = this.cam.style === (cs.kind === 'issen' ? 'issen' : cs.fk === 'flow' ? 'flow' : 'finisher');
+    if (!owns) {
+      this.cineSubjects = null;
+      return;
+    }
     if (!pa || !pb || !va || !vb || !this.cam.inCinematic) {
       // A subject vanished (e.g. corpses cleared): hand the camera back instead of filming air.
       if (this.cam.inCinematic) this.cam.releaseCinematic();
@@ -718,7 +736,7 @@ export class Game {
     }
   }
 
-  private onEvent(ev: CombatEvent): void {
+  private onEvent(ev: CombatEvent, tick = this.world.tick): void {
     this.teach(ev);
     const w = this.world;
     const pid = w.player.id;
@@ -729,9 +747,14 @@ export class Game {
         const player = ev.id === pid;
         const m = ev.move;
         const name: SfxName = player ? (m.type === 'thrust' ? 'swingThrust' : m.heavy || m.finale ? 'swingHeavy' : m.type === 'blunt' ? 'dodge' : 'swingLight') : 'swingEnemy';
+        // The whoosh starts as the blade is released (see timeline.ts). A blow interrupted before
+        // its contact tick never whooshes / is cut short; one that reached contact plays on.
+        const gale = f?.act.kind === 'gale';
+        const contactTick = tick + (m.projectile || gale ? 0 : releaseTicks(m));
+        const same = !!f && f.act.kind === 'attack' && f.act.move === m;
+        if (f && !same && !gale && w.tick - f.act.t < contactTick) break;
         const h = this.play(name, f ? this.at(f.id) : undefined, player ? 0.9 : 0.8, 0.9 + Math.random() * 0.2);
-        // Released before contact (see timeline.ts): if the blow never lands, cut the whoosh.
-        if (h && f && f.act.kind === 'attack' && f.act.t < m.startup) this.whooshes.push({ id: f.id, serial: f.serial, contact: m.startup, h });
+        if (h && f && same && w.tick < contactTick) this.whooshes.push({ id: f.id, serial: f.serial, contactTick, h });
         break;
       }
       case 'hit': {
@@ -819,7 +842,8 @@ export class Game {
         const b = this.at(ev.victim);
         this.cam.cinematic(a, b, 'issen', 1.0, 3);
         const perf = w.get(ev.performer);
-        if (perf) this.cineSubjects = { a: ev.performer, b: ev.victim, kind: 'issen', serial: perf.serial };
+        // (A standoff win stays on the standoff shot, which is re-issued every frame.)
+        if (perf && w.mode !== 'standoff') this.cineSubjects = { a: ev.performer, b: ev.victim, kind: 'issen', serial: perf.serial };
         this.env.gust(1);
         // The cut registers when the frozen victim starts to fall (victim timeline, not wall-clock:
         // pause, slow-mo, hit-stop and restarts all stay in sync).

@@ -103,6 +103,11 @@ export class World {
   timeScale = 1;
   input: InputFrame = emptyInput();
   private events: CombatEvent[] = [];
+  /** Simulation tick each queued event was emitted on (parallel to `events`). */
+  private eventTicks: number[] = [];
+  /** Hit-stop presentation: display phase when the freeze started, and time frozen since. */
+  private freezeA0 = 0;
+  private freezeT = 0;
   private slowmos: Slowmo[] = [];
   private acc = 0;
   private pending: { pressed: Partial<Record<Button, boolean>>; released: Partial<Record<Button, boolean>> } = { pressed: {}, released: {} };
@@ -191,12 +196,28 @@ export class World {
   // ── Events & time ───────────────────────────────────────────────────────
   emit(e: CombatEvent): void {
     this.events.push(e);
+    this.eventTicks.push(this.tick);
   }
 
   drainEvents(): CombatEvent[] {
     const e = this.events;
     this.events = [];
+    this.eventTicks = [];
     return e;
+  }
+
+  /** Drain events together with the tick each happened on (the presentation plays them when the
+   *  displayed moment reaches that tick). */
+  drainTimedEvents(): { ev: CombatEvent; tick: number }[] {
+    const out = this.events.map((ev, i) => ({ ev, tick: this.eventTicks[i] }));
+    this.events = [];
+    this.eventTicks = [];
+    return out;
+  }
+
+  /** The moment the renderer shows, in ticks (roots and poses interpolate tick − 1 → tick). */
+  get displayTick(): number {
+    return this.tick - 1 + this.alpha;
   }
 
   /** Request slow motion for `seconds` of real time. The strongest active request wins. */
@@ -241,6 +262,7 @@ export class World {
     this.stats.time += realDt;
 
     this.acc += realDt * ts;
+    if (this.hitstop > 0) this.freezeT += realDt * ts;
     let n = 0;
     while (this.acc >= DT && n < 8) {
       this.acc -= DT;
@@ -249,15 +271,19 @@ export class World {
       this.step(frame);
       if (n === 0) this.pending = { pressed: {}, released: {} };
       n++;
-      // Hit-stop: the freeze starts now (the rest of this frame is spent frozen) and the display
-      // holds the tick that caused it (alpha = 1: roots and poses on the impact frame). When it
-      // ends, the next tick runs at once, so the display carries on from that held frame —
-      // no jitter, no backward pop, and the hold lasts exactly `hitstop` ticks at any frame phase.
-      if (!frozen && this.hitstop > 0) this.acc = 0;
-      else if (frozen && this.hitstop === 0) this.acc += DT;
+      // Hit-stop presentation. The display (tick − 1 + alpha) keeps moving until it reaches the
+      // tick that caused the freeze — the impact frame — and then holds it for exactly `hitstop`
+      // ticks (the freeze is lengthened by the time that approach takes). When it ends, the next
+      // tick runs at once so the display continues from the held frame: no skipped frames, no
+      // jitter, no backward pop, the same hold at any refresh rate or frame phase.
+      if (!frozen && this.hitstop > 0) {
+        this.freezeA0 = Math.min(1, this.acc / DT);
+        this.freezeT = 0;
+        this.acc -= DT;
+      } else if (frozen && this.hitstop === 0) this.acc += DT;
     }
     if (n === 8) this.acc = 0;
-    this.alpha = this.hitstop > 0 ? 1 : Math.min(1, this.acc / DT);
+    this.alpha = this.hitstop > 0 ? Math.min(1, this.freezeA0 + this.freezeT / DT) : Math.min(1, Math.max(0, this.acc / DT));
     return n;
   }
 

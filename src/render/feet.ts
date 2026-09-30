@@ -107,6 +107,7 @@ const _qi = new THREE.Quaternion();
 const _e = new THREE.Euler();
 const _piv = new THREE.Vector3();
 const _lf = new THREE.Vector3();
+const _land = new THREE.Vector3();
 
 export class FootPlanter {
   private readonly feet: [FootState, FootState] = [newFoot(), newFoot()];
@@ -280,11 +281,18 @@ export class FootPlanter {
         const pl = this.planned;
         this.planned = null;
         const f = this.feet[pl.foot];
-        if (f.swinging) {
-          // Already mid-stride: keep that stride and retime what is left of it so it lands on
-          // the requested moment (no restart from the old footprint).
-          f.dur = pl.dur / Math.max(0.02, 1 - f.u);
+        if (f.swinging && (1 - f.u) * f.dur > pl.dur * 0.5) {
+          // Early in a stride: keep it (no restart from the old footprint), retime what is left so
+          // it lands on the requested moment, and drop the running lead (the lunge places it).
+          f.ahead = -1;
+          f.dur = Math.min(0.5, pl.dur / Math.max(0.05, 1 - f.u));
         } else {
+          if (f.swinging) {
+            // Nearly down: let this stride land where it is now, then stomp from there.
+            f.swinging = false;
+            f.planted.copy(f.cur).setY(0);
+            f.plantedYaw = f.curYaw;
+          }
           this.beginStep(pl.foot, _ideal[pl.foot], idealYaw[pl.foot], vel, speed, p, scale);
           f.dur = pl.dur;
           f.lift = pl.lift;
@@ -296,19 +304,49 @@ export class FootPlanter {
       // the same at any refresh rate.
       const cyc = p.stride > 0 && speed > 0.4 ? speed / (p.stride * scale) : 0;
       if (cyc > 0) {
-        if (!this.walking) {
-          // Setting off: the foot furthest behind where it should be goes first.
-          const eL = Math.hypot(this.feet[0].planted.x - _ideal[0].x, this.feet[0].planted.z - _ideal[0].z);
-          const eR = Math.hypot(this.feet[1].planted.x - _ideal[1].x, this.feet[1].planted.z - _ideal[1].z);
-          const first = eL >= eR ? 0 : 1;
-          this.phase = first === p.lead ? 0.999 : 0.499;
-        }
-        this.walking = true;
-        const prev = this.phase;
-        this.phase = (this.phase + dt * cyc) % 1;
         const swing = Math.min(p.swingDur, 0.42 / cyc);
         // Land ahead by half the stance travel, so the foot passes under the hip mid-stance.
         const ahead = (speed * Math.max(0, 1 / cyc - swing)) / 2;
+        if (!this.walking) {
+          const sw: 0 | 1 | -1 = this.feet[0].swinging ? 0 : this.feet[1].swinging ? 1 : -1;
+          if (sw !== -1) {
+            // A step already under way becomes the first stride: the cadence starts from it (else
+            // it would wait a whole cycle while the body walks off the other, planted foot).
+            // Late in its swing, the other foot sets off as soon as it lands.
+            const f = this.feet[sw];
+            const trig = sw === p.lead ? 0 : 0.5;
+            const left = (1 - f.u) * f.dur * cyc;
+            this.phase = (trig + Math.min(f.u * swing * cyc, 0.5 - left) + 1) % 1;
+            f.ahead = ahead;
+            // Re-aim it like a stride (landing ahead), keeping the foot where it is right now.
+            const e = smoothstep(f.u);
+            if (e < 0.9) {
+              this.predict(_ideal[sw], vel, f.dur * (1 - f.u), p, speed, scale, f.to, ahead);
+              f.from.copy(f.cur).setY(0).addScaledVector(f.to, -e).multiplyScalar(1 / (1 - e)).setY(0);
+            }
+          } else {
+            // Setting off: the foot furthest behind where it should be goes first.
+            const eL = Math.hypot(this.feet[0].planted.x - _ideal[0].x, this.feet[0].planted.z - _ideal[0].z);
+            const eR = Math.hypot(this.feet[1].planted.x - _ideal[1].x, this.feet[1].planted.z - _ideal[1].z);
+            const first = Math.abs(eL - eR) < 1e-3 * scale ? p.lead : eL > eR ? 0 : 1;
+            this.phase = first === p.lead ? 0.999 : 0.499;
+          }
+        }
+        this.walking = true;
+        // Re-sync the cadence to the feet: a planted foot left well behind where a stride would
+        // have lifted it (setting off, a change of speed or direction) steps now.
+        for (const i of FEET) {
+          const f = this.feet[i];
+          const o = this.feet[i === 0 ? 1 : 0];
+          if (f.swinging || (o.swinging && o.u < 0.5)) continue;
+          const d = ((f.planted.x - _ideal[i].x) * vel.x + (f.planted.z - _ideal[i].z) * vel.z) / speed;
+          if (d < -(ahead + 0.1 * scale)) {
+            this.phase = ((i === p.lead ? 0 : 0.5) + 0.999) % 1;
+            break;
+          }
+        }
+        const prev = this.phase;
+        this.phase = (this.phase + dt * cyc) % 1;
         for (const i of FEET) {
           const trigger = i === p.lead ? 0 : 0.5;
           const since = (this.phase - trigger + 1) % 1;
@@ -317,7 +355,10 @@ export class FootPlanter {
           if (!crossed || f.swinging) continue;
           this.beginStep(i, _ideal[i], idealYaw[i], vel, speed, p, scale, ahead);
           f.dur = swing;
+          // Already this far into the swing (it should have started between two frames); the
+          // time elapsed this frame is part of that, so it is not advanced again.
           f.u = Math.min(0.5, since / cyc / swing);
+          f.fresh = true;
         }
       } else this.walking = false;
       // Decide which planted foot needs to step.
@@ -333,7 +374,8 @@ export class FootPlanter {
         const hipX = rootPos.x + ((i === 0 ? 0.1 : -0.1) * bulk * c) * scale;
         const hipZ = rootPos.z + (-(i === 0 ? 0.1 : -0.1) * bulk * s) * scale;
         const reach = Math.hypot(f.planted.x - hipX, f.planted.z - hipZ) / scale;
-        const urgent = reach > 0.6;
+        // Over-stretched, or the body turned so far over the foot that the leg would twist.
+        const urgent = reach > 0.6 || yawErr > 1.6;
         // While walking the cadence decides; only over-stretch / a sharp turn steps here.
         if (cyc > 0 && !urgent && err < 0.6 * scale && yawErr < 0.95) continue;
         if (err > p.threshold * scale || yawErr > 0.95 || urgent) need[i] = err / scale + (urgent ? 10 : 0) + (i === p.lead ? 0.001 : 0);
@@ -364,9 +406,11 @@ export class FootPlanter {
       if (f.fresh) f.fresh = false;
       else f.u = Math.min(1, f.u + dt / f.dur);
       // Keep steering the landing spot toward where the pose will want the foot when it lands
-      // (the body keeps moving for the rest of the swing).
+      // (the body keeps moving for the rest of the swing). The foot commits over the last part of
+      // the swing: steering near touchdown would drag it along the ground as it lands.
       this.predict(_ideal[i], vel, f.dur * (1 - f.u), p, speed, scale, _pred, f.ahead);
-      const steer = Math.min(1, 1 - Math.exp(-dt * 18));
+      const commit = 1 - smoothstep(Math.min(1, Math.max(0, (f.u - 0.55) / 0.35)));
+      const steer = Math.min(1, 1 - Math.exp(-dt * 18)) * commit;
       f.to.lerp(_pred, steer);
       f.toYaw = f.toYaw + wrap(idealYaw[i] - f.toYaw) * steer;
       const e = smoothstep(f.u);
@@ -387,19 +431,34 @@ export class FootPlanter {
     this.gait = gait;
 
     this.writeBack(pose, rootPos, rootYaw, c, s, scale, tilt);
-    // Lower the pelvis where a leg would over-stretch. Planted feet are a hard constraint (applied
-    // at once, so they never get dragged by the leg); the swinging foot eases its part in, so a
-    // long stride never jerks the upper body.
+    // Lower the pelvis where a leg would over-stretch. Planted feet are a hard constraint (so they
+    // never get dragged by the leg); a swinging foot counts where it is going to land, blended in
+    // as the swing progresses, so the pelvis is already down when it lands (no snap).
+    for (const i of FEET) {
+      const f = this.feet[i];
+      if (!f.swinging) continue;
+      const k = smoothstep(Math.min(1, f.u));
+      _land.copy(f.cur).lerp(_lf.copy(f.to).setY(0), k);
+      toLocal(_land, i === 0 ? pose.footL : pose.footR, rootPos, c, s, scale);
+    }
     const all = pose.pelvis.y - fitPelvisY(pose, bulk, true, true);
+    this.writeBack(pose, rootPos, rootYaw, c, s, scale, tilt);
     const hard = pose.pelvis.y - fitPelvisY(pose, bulk, !this.feet[0].swinging, !this.feet[1].swinging);
     this.drop += (all - this.drop) * (1 - Math.exp(-dt * (all > this.drop ? 25 : 10)));
     this.drop = Math.max(this.drop, hard);
     this.applyDrop(pose);
+    // The view tilts the body about the lowered pelvis: write the feet back about that pivot.
+    if (tilt && this.drop > 0) {
+      _piv.y = pose.pelvis.y;
+      this.writeBack(pose, rootPos, rootYaw, c, s, scale, tilt);
+    }
   }
 
-  /** The body lowers as a whole: pelvis and arms (the hands keep their reach from the shoulders). */
+  /** The body lowers as a whole: pelvis and arms (the hands keep their reach from the shoulders).
+   *  With the bow up the hands stay put — the bow is held where the arrow leaves. */
   private applyDrop(pose: Pose): void {
     pose.pelvis.y -= this.drop;
+    if (pose.bowInHand > 0.5) return;
     pose.handR.y -= this.drop;
     pose.handL.y -= this.drop;
   }

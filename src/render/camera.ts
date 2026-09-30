@@ -74,6 +74,11 @@ export class CameraRig {
     return this.cine !== null;
   }
 
+  /** Style of the running shot (null when none). */
+  get style(): CineStyle | null {
+    return this.cine ? this.cine.style : null;
+  }
+
   /** Mouse / right stick look. */
   look2(dx: number, dy: number): void {
     if (dx === 0 && dy === 0) return;

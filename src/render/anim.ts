@@ -437,6 +437,10 @@ export class Animator {
   private victimT = 0;
   private deadClock = 0;
   private dtSim = 0;
+  /** The attack being played (to re-evaluate it exactly at the tick another action replaced it). */
+  private atkMove: MoveDef | null = null;
+  private atkT = 0;
+  private atkTick = 0;
   /** Direction of the performer in the victim's frame, latched at contact (the fall never re-aims). */
   private perfX = 0;
   private perfZ = 1;
@@ -525,7 +529,12 @@ export class Animator {
     // During hit-stop the world holds alpha = 1, i.e. exactly the tick that caused it: the
     // contact key, whatever the refresh rate or frame phase.
     const t = Math.max(0, a.t - 1 + alpha);
-    if (f.serial !== this.serial || a.kind !== this.kind) this.onActionStart(f);
+    if (f.serial !== this.serial || a.kind !== this.kind) this.onActionStart(f, w);
+    if (a.kind === 'attack') {
+      this.atkMove = a.move ?? null;
+      this.atkT = a.t;
+      this.atkTick = w.tick;
+    }
     if (a.kind === 'gale') {
       // Same clock as the pose: a new dash-cut segment starts from where the last one ended.
       const seg = Math.floor(Math.max(0, t - 1) / GALE_TL.seg);
@@ -574,6 +583,15 @@ export class Animator {
     return this.pose;
   }
 
+  private prevKindIs(k: string): boolean {
+    return this.prevKind === k;
+  }
+
+  /** From the pose the action started in (entry) toward `rest`, done by `dur` ticks. */
+  private settle(rest: Pose, t: number, dur: number, out: Pose): Pose {
+    return lerpPose(this.entry, rest, smooth(t / Math.max(1, dur)), out);
+  }
+
   /** Copy the current animation pose with whole-body angles wrapped (a finished 360° spin or roll is 0, not a reverse spin). */
   private snapshot(out: Pose): Pose {
     clonePose(this.animPose, out);
@@ -583,7 +601,7 @@ export class Animator {
     return out;
   }
 
-  private onActionStart(f: Fighter): void {
+  private onActionStart(f: Fighter, w: World): void {
     const a = f.act;
     this.prevKind = this.kind;
     this.kind = a.kind;
@@ -591,6 +609,18 @@ export class Animator {
     this.galeSeg = -1;
     this.stepPlanned = false;
     this.snapshot(this.from);
+    // An attack replaced mid-way (deflected, flowed, bounced, parried, issen'd, interrupted…): the
+    // new action starts from the attack exactly as it was on the tick it was replaced — e.g. the
+    // strike key when that happened on its contact tick — not from the last drawn frame.
+    const m = this.prevKindIs('attack') ? this.atkMove : null;
+    const sw = m && !m.projectile ? swingFor(this.family, m) : null;
+    if (m && sw) {
+      const tl = swingTl(m);
+      const at = Math.min(tl.end, this.atkT + Math.max(0, w.tick - this.atkTick));
+      this.swingPose(sw, m, tl, at, this.entry, this.from);
+      this.fixHands(this.from);
+      this.from.bodyYaw = m.id === 'r_s4' ? wrapAngle(smooth((at - SPIN_START(m)) / SPIN_LEN(m)) * Math.PI * 2) : 0;
+    }
     clonePose(this.from, this.entry);
     // Momentum carry: the new windup starts moving the way the blade was already going.
     this.entryVel.copy(this.handVel);
@@ -716,12 +746,14 @@ export class Animator {
       case 'deflect': {
         const u = easeOut(t / 4);
         const back = smooth((t - 6) / 8);
-        return lerpPose(this.kp(K.guardRanger), this.kp(K.deflectUp), u * (1 - back), out);
+        this.settle(this.kp(K.guardRanger), t, 6, _k1);
+        return lerpPose(_k1, this.kp(K.deflectUp), u * (1 - back), out);
       }
       case 'flow':
       case 'flowStep': {
         const u = a.kind === 'flow' ? easeOut(t / 6) : smooth(t / 6);
-        return lerpPose(this.stance, this.kp((a.side ?? 1) > 0 ? K.flowR : K.flowL), u, out);
+        this.settle(this.stance, t, 6, _k1);
+        return lerpPose(_k1, this.kp((a.side ?? 1) > 0 ? K.flowR : K.flowL), u, out);
       }
       case 'dodge': {
         const roll = a.value === 1;
@@ -755,18 +787,21 @@ export class Animator {
       case 'recoil':
       case 'guardbreak': {
         const u = Math.sin(Math.min(1, t / 7) * Math.PI * 0.5) * (1 - smooth((t - a.dur * 0.55) / (a.dur * 0.45)));
-        return lerpPose(this.stance, this.kp(a.kind === 'recoil' ? K.recoil : K.guardbreak), u, out);
+        this.settle(this.stance, t, a.dur * 0.6, _k1);
+        return lerpPose(_k1, this.kp(a.kind === 'recoil' ? K.recoil : K.guardbreak), u, out);
       }
       case 'broken': {
         const u = smooth(t / 12) * (1 - smooth((t - a.dur + 14) / 14));
-        lerpPose(this.stance, this.kp(K.broken), u, out);
+        this.settle(this.stance, t, 12, _k1);
+        lerpPose(_k1, this.kp(K.broken), u, out);
         out.pelvis.x += wob(0.02, 0.09) * u;
         out.lean += wob(0.04, 0.07) * u;
         return out;
       }
       case 'overextended': {
         const u = easeOut(t / 10) * (1 - smooth((t - a.dur + 16) / 16));
-        return lerpPose(this.stance, this.kp(K.overextended), u, out);
+        this.settle(this.stance, t, 10, _k1);
+        return lerpPose(_k1, this.kp(K.overextended), u, out);
       }
       case 'fear': {
         clonePose(this.kp(K.fear), out);
@@ -777,6 +812,7 @@ export class Animator {
       case 'evade': {
         const side = a.side ?? 1;
         const u = Math.sin(Math.min(1, t / a.dur) * Math.PI);
+        this.settle(this.stance, t, a.dur * 0.5, out);
         out.roll = -side * 0.35 * u;
         out.pelvis.y -= 0.12 * u;
         out.lean -= 0.1 * u;
@@ -972,12 +1008,11 @@ export class Animator {
   }
 
   private deadPose(f: Fighter, w: World, out: Pose): Pose {
+    this.deadClock += this.dtSim;
     // Finisher victims keep playing their fall on the same timeline until the body is down.
-    if (this.prevKind === 'finished') {
-      this.deadClock += this.dtSim;
-      return this.victimPose(f, w, this.victimT + this.deadClock * 60, this.victimKind, this.victimPerf, out);
-    }
-    const u = clamp01(f.deadTicks / 34);
+    if (this.prevKind === 'finished') return this.victimPose(f, w, this.victimT + this.deadClock * 60, this.victimKind, this.victimPerf, out);
+    // Normal death: the collapse runs on the presentation clock (smooth in slow-mo / at any rate).
+    const u = clamp01((this.deadClock * 60) / 34);
     const fx = this.fallX;
     const fz = this.fallZ;
     const kneel = clonePose(this.kp(K.kneel), _k1);
@@ -989,7 +1024,9 @@ export class Animator {
   // ── Bow ───────────────────────────────────────────────────────────────────
   private archerShot(t: number, m: MoveDef, out: Pose): Pose {
     const draw = smooth((t - 6) / (m.startup - 10));
-    const released = t >= m.startup;
+    // The arrow is spawned and moved on the startup tick, so it is on screen from display time
+    // startup − 1: the string is released on that same frame (no second, nocked arrow).
+    const released = t >= m.startup - 1;
     lerpPose(this.stance, this.kp(K.archerDraw), smooth(t / 8), out);
     out.handR.copy(ARCHER_HAND_START).lerp(ARCHER_HAND_ANCHOR, released ? 1 : draw);
     if (released) out.handR.x -= 0.08;
@@ -1005,7 +1042,7 @@ export class Animator {
     const quick = f.act.kind === 'quickshot';
     const pitch = Math.asin(Math.max(-0.8, Math.min(0.8, w.input.aimDir.y)));
     let draw: number;
-    if (quick) draw = t < 6 ? easeOut(t / 5) : 0;
+    if (quick) draw = t < 5 ? easeOut(t / 5) : 0;
     else draw = drawInfo(ps.draw, ps.arrowType, w.settings.windowScale).amount;
     const raise = quick ? smooth(t / 3) * (1 - smooth((t - 14) / 6)) : 1;
     const y = 1.45 + pitch * 0.35;
@@ -1169,8 +1206,10 @@ export class Animator {
     if (!loco || speed < 0.15) return;
     const run = clamp01((speed - 2.5) / 3);
     const g = this.planter.gait;
-    // Pelvis rides highest mid-stride and dips as the foot lands.
-    out.pelvis.y -= (1 - Math.abs(g)) * 0.035 * Math.min(1, speed / 3);
+    // Pelvis rides highest mid-stride and dips as the foot lands. Aiming on the move, the knees
+    // stay bent and the hips level instead, so the bow arm does not bob with the steps.
+    if (k === 'aim') out.pelvis.y -= 0.06 * Math.min(1, speed / 2);
+    else out.pelvis.y -= (1 - Math.abs(g)) * 0.035 * Math.min(1, speed / 3);
     out.lean += lz * run * 0.18;
     out.roll += -lx * run * 0.08;
     out.torsoYaw += g * 0.06 * Math.min(1, speed / 3);
@@ -1271,7 +1310,8 @@ export class Animator {
         P.weight = Math.min(1, 0.3 + speed * 0.08);
         // Full left+right cycle length: longer strides as speed rises, but the stance travel
         // (stride − speed × swing) stays within what the legs reach (≈ ±0.45 m of the hip).
-        P.stride = Math.min(1.4, 0.8 + speed * 0.12);
+        // Sideways the legs spread less than they stride: shorter, quicker side steps.
+        P.stride = Math.min(1.4, 0.8 + speed * 0.12) * (1 - 0.3 * Math.min(1, Math.abs(lx)));
         return P;
       }
     }
@@ -1317,9 +1357,13 @@ function blendTime(kind: string): number {
       return 0;
     case 'deflect':
     case 'flow':
-      return 0.03;
+    case 'flowStep':
     case 'recoil':
     case 'guardbreak':
+    case 'broken':
+    case 'overextended':
+    case 'evade':
+      return 0;
     case 'blockstun':
       return 0.05;
     case 'finished':

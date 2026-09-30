@@ -370,6 +370,10 @@ export function doIssen(w: World, p: Fighter, att: Fighter, hajiki: boolean, sta
   const to = add(att.pos, scale(dir, att.radius + 1.1));
   const kind: FinisherKind = standoff ? 'standoff' : hajiki ? 'hajiki' : 'issen';
   p.set('issen', ISSEN_TL.dur, { targetId: att.id, from: { ...p.pos }, to, travel: ISSEN_TL.travel, finisher: kind });
+  // Hajiki / standoff issen start from player input, before this tick's action pass: begin one
+  // tick earlier so, like a normal issen (started in the hit pass), the pass-through dash starts
+  // after the freeze instead of 36% of it being taken on the freeze tick.
+  if (hajiki || standoff) p.act.t = -1;
   p.yaw = toYaw(dir);
   ps.hajikiTarget = -1;
   if (att.brain) att.brain.token = false;
