@@ -2,16 +2,17 @@ import * as THREE from 'three';
 import { World } from './core/world';
 import { WaveDirector } from './core/waves';
 import type { Fighter } from './core/fighter';
-import type { ArchetypeId, CombatEvent, Projectile } from './core/types';
+import type { ArchetypeId, CombatEvent, FinisherKind, Projectile } from './core/types';
 import { T } from './core/tuning';
 import { drawInfo } from './core/bow';
-import { GALE_SEG } from './core/combat';
 import { MOVES } from './core/moves';
+import { FINISHER_TL, GALE_TL, ISSEN_TL, galeLocal } from './core/timeline';
 import { emptyInput } from './core/input';
 import { startEnemyAttack } from './core/ai';
 import { createEnvironment, type Environment } from './render/environment';
 import { CharacterView, setMetalEnvironment, type CharKind } from './render/character';
-import { Animator } from './render/anim';
+import { Animator, swingTl } from './render/anim';
+import type { Landing } from './render/feet';
 import { CameraRig } from './render/camera';
 import { Decals, makeGlintTexture, Puffs, Rings, Sparks, SwordTrail } from './render/fx';
 import { InputDevices } from './input/devices';
@@ -31,6 +32,28 @@ interface View {
 }
 
 type State = 'title' | 'play' | 'pause' | 'result';
+
+/** An effect tied to a point on a fighter's action timeline (cancelled if that action ends early). */
+interface ActionCue {
+  id: number;
+  serial: number;
+  t: number;
+  fire: () => void;
+}
+
+/** Who a running cinematic shot is following. */
+interface CineSubjects {
+  a: number;
+  b: number;
+  kind: 'finisher' | 'issen';
+  serial: number;
+  fk?: FinisherKind;
+}
+
+const _root = new THREE.Vector3();
+const _base = new THREE.Vector3();
+const _tip = new THREE.Vector3();
+const _focus = new THREE.Vector3();
 
 const V3 = (x = 0, y = 0, z = 0) => new THREE.Vector3(x, y, z);
 
@@ -60,7 +83,11 @@ export class Game {
   private resultTimer = -1;
   private resultWin = false;
   private helpTimer = 30;
-  private stepDist = 0;
+  /** Effects scheduled on simulation timelines (pause / slow-mo / restart safe). */
+  private readonly cues: ActionCue[] = [];
+  private cineSubjects: CineSubjects | null = null;
+  private clockWorld: World | null = null;
+  private lastClock = 0;
   /** Contextual one-time lessons, shown the first time a situation comes up. */
   private readonly lessons = new Set<string>();
   /** Automation: freeze the simulation but keep animating / rendering. */
@@ -145,6 +172,8 @@ export class Game {
     for (const m of this.arrowMeshes.values()) this.scene.remove(m);
     this.arrowMeshes.clear();
     this.hud.clear();
+    this.cues.length = 0;
+    this.cineSubjects = null;
   }
 
   start(mode: 'campaign' | 'practice'): void {
@@ -295,8 +324,14 @@ export class Game {
       this.devices.releasePointer();
     }
 
-    const simDt = this.debugHold ? dt : this.state === 'pause' ? 0 : w.hitstop > 0 ? 0 : dt * w.timeScale;
+    // Presentation time follows the simulation clock exactly (includes the ticks that ran before a
+    // hit-stop started this frame, nothing while frozen or paused, scaled in slow-mo).
+    const clock = w.simClock;
+    const simDt = this.debugHold ? dt : this.clockWorld === w ? Math.max(0, Math.min(0.1, clock - this.lastClock)) : 0;
+    this.clockWorld = w;
+    this.lastClock = clock;
     this.syncViews(simDt, dt);
+    this.runCues();
     this.syncProjectiles();
     this.sparks.update(simDt);
     this.embers.update(simDt);
@@ -321,6 +356,7 @@ export class Game {
         const leader = w.get(w.standoff.leaderId);
         if (leader && pv) this.cam.cinematic(focus, this.views.get(leader.id)?.char.root.position ?? focus, 'standoff', 0.2);
       }
+      this.trackCinematic();
       this.cam.update(dt, focus, { aiming: w.player.is('aim'), lockTarget: lockPos, crowd, moveDir: mv, slowmo: w.timeScale < 0.9 });
     }
     if (this.debugCam) {
@@ -391,9 +427,10 @@ export class Game {
       let dy = f.yaw - f.prevYaw;
       while (dy > Math.PI) dy -= Math.PI * 2;
       while (dy < -Math.PI) dy += Math.PI * 2;
-      const pose = v.anim.update(f, w, alpha, simDt);
+      const yaw = f.prevYaw + dy * alpha;
+      const pose = v.anim.update(f, w, alpha, simDt, _root.set(x, 0, z), yaw);
       v.char.root.position.set(x, 0, z);
-      v.char.root.rotation.y = f.prevYaw + dy * alpha + pose.bodyYaw;
+      v.char.root.rotation.y = yaw + pose.bodyYaw;
       v.char.root.scale.setScalar(f.size);
       v.char.applyPose(pose, f.speed, simDt);
       if (f.phase === 2) v.char.shatterArmor();
@@ -410,15 +447,9 @@ export class Game {
       if (f.burning > 0 && simDt > 0 && Math.random() < 0.7) {
         this.embers.emit(V3(x, 0.4 + Math.random() * 1.2, z), 2, { color: Math.random() < 0.5 ? 0xff7a1a : 0xffc04a, speed: 0.6, size: 0.09, life: 0.6, gravity: -2, up: 1, jitter: 0.5 });
       }
-      this.updateTrail(v, f, simDt);
-      // Soft footsteps for the ranger.
-      if (f.isPlayer && f.alive && simDt > 0 && f.speed > 1) {
-        this.stepDist += f.speed * simDt;
-        if (this.stepDist > (f.speed > 4 ? 1.1 : 0.8)) {
-          this.stepDist = 0;
-          this.play('footstep', undefined, 0.5, 0.9 + Math.random() * 0.2);
-        }
-      }
+      this.updateTrail(v, f, simDt, alpha);
+      // Footsteps and dust come from actual foot landings.
+      for (const l of v.anim.landings) this.onLanding(f, l);
     }
     for (const [id, v] of this.views) {
       if (!alive.has(id)) {
@@ -428,14 +459,17 @@ export class Game {
     }
   }
 
-  private updateTrail(v: View, f: Fighter, dt: number): void {
+  /** Trail windows come from the same timelines as the damage and the poses (core/timeline.ts). */
+  private updateTrail(v: View, f: Fighter, dt: number, alpha: number): void {
     const a = f.act;
-    let active = false;
+    let t = a.t + alpha;
+    let win: readonly [number, number] | null = null;
+    let key = f.serial;
     let color = f.isPlayer ? 0xfff0d0 : 0xcfcfcf;
     let intensity = f.isPlayer ? 1 : 0.6;
-    if (a.kind === 'attack' && a.move && !a.move.feint && !a.move.projectile) {
+    if (a.kind === 'attack' && a.move && !a.move.feint && !a.move.projectile && a.move.type !== 'blunt') {
       const m = a.move;
-      active = a.t >= m.startup - 2 && a.t <= m.startup + m.active + 3;
+      win = swingTl(m).trail;
       if (f.isPlayer) color = m.type === 'thrust' ? 0xbfeeff : m.heavy ? 0xffd27a : 0xfff0d0;
       if (m.unblockable === 'red') {
         color = 0xff4a30;
@@ -444,34 +478,93 @@ export class Game {
         color = 0x8ccaff;
         intensity = 1.1;
       }
-      if (a.move.type === 'blunt') active = false;
     } else if (a.kind === 'finisher') {
       const k = a.finisher;
-      active = k === 'slash' ? a.t >= 26 && a.t <= 36 : k === 'thrust' ? a.t >= 30 && a.t <= 36 : a.t >= 11 && a.t <= 18;
+      if (k === 'slash' || k === 'thrust' || k === 'flow') win = FINISHER_TL[k].trail;
       color = 0xffe6c0;
       intensity = 1.4;
     } else if (a.kind === 'issen') {
-      active = a.t >= 1 && a.t <= 9;
+      win = ISSEN_TL.trail;
       color = 0xffffff;
       intensity = 2;
     } else if (a.kind === 'gale') {
-      const local = (a.t - 1) % GALE_SEG;
-      active = local >= 2 && local <= 8;
+      key = f.serial * 64 + Math.floor((a.t - 1) / GALE_TL.seg);
+      t = galeLocal(t);
+      win = GALE_TL.trail;
       color = 0xa8f0ff;
       intensity = 1.6;
     } else if (a.kind === 'standoff' && !f.isPlayer && a.value === 1) {
-      active = a.t >= (a.travel ?? 18) - 3;
+      const travel = a.travel ?? 18;
+      win = [travel - 3, travel + 6];
     }
+    const active = !!win && t >= win[0] && t < win[1];
     v.trail.setColor(color, intensity);
-    const base = V3();
-    const tip = V3();
-    v.char.bladeWorld(base, tip);
-    v.trail.update(base, tip, active, dt);
+    v.char.bladeWorld(_base, _tip);
+    v.trail.update(_base, _tip, active, dt, key);
     if (v.trailL) {
-      v.char.bladeWorld(base, tip, true);
+      v.char.bladeWorld(_base, _tip, true);
       v.trailL.setColor(color, intensity);
-      v.trailL.update(base, tip, active, dt);
+      v.trailL.update(_base, _tip, active, dt, key);
     }
+  }
+
+  private onLanding(f: Fighter, l: Landing): void {
+    if (f.isPlayer) this.play('footstep', undefined, 0.25 + 0.5 * l.strength, 0.9 + Math.random() * 0.2);
+    else if (l.strength > 0.6) this.play('footstep', l.pos, 0.3 * l.strength, 0.8 + Math.random() * 0.2);
+    // A hard plant (stomp, dodge landing) kicks up a little dust — only where a foot actually landed.
+    if (l.strength > 0.7) this.embers.emit(_focus.copy(l.pos).setY(0.04), 3, { color: 0xc9b894, speed: 0.5, size: 0.18, life: 0.4, grow: 0.5, alpha: 0.22 });
+  }
+
+  /** Fire effects that were scheduled on a fighter's action timeline. */
+  private runCues(): void {
+    for (let i = this.cues.length - 1; i >= 0; i--) {
+      const c = this.cues[i];
+      const f = this.world.get(c.id);
+      if (!f || f.serial !== c.serial) {
+        this.cues.splice(i, 1);
+        continue;
+      }
+      if (f.act.t >= c.t) {
+        this.cues.splice(i, 1);
+        c.fire();
+      }
+    }
+  }
+
+  /** Keep finisher / issen shots on the live fighters and the contact point; hand back when done. */
+  private trackCinematic(): void {
+    const cs = this.cineSubjects;
+    if (!cs) return;
+    const w = this.world;
+    const pa = w.get(cs.a);
+    const pb = w.get(cs.b);
+    const va = pa ? this.views.get(pa.id) : undefined;
+    const vb = pb ? this.views.get(pb.id) : undefined;
+    if (!pa || !pb || !va || !vb || !this.cam.inCinematic) {
+      this.cineSubjects = null;
+      return;
+    }
+    let weight = 0;
+    let over = false;
+    if (cs.kind === 'finisher') {
+      over = pa.serial !== cs.serial;
+      const tl = cs.fk === 'slash' || cs.fk === 'thrust' || cs.fk === 'flow' ? FINISHER_TL[cs.fk] : null;
+      if (tl && !over) {
+        const t = pa.act.t + w.alpha;
+        weight = smooth01((t - (tl.release - 8)) / 8) * (1 - smooth01((t - tl.holdEnd) / 10));
+      }
+    } else {
+      // Issen: hold on the victim until the cut has registered and it is going down.
+      over = pa.serial !== cs.serial && (pb.act.kind !== 'finished' || pb.act.t >= ISSEN_TL.victimFreeze + 12);
+      weight = pb.act.kind === 'finished' ? smooth01((pb.act.t - ISSEN_TL.victimFreeze + 6) / 6) * 0.7 : 0;
+    }
+    if (over) {
+      this.cam.releaseCinematic();
+      this.cineSubjects = null;
+      return;
+    }
+    _focus.copy(vb.char.root.position).setY(1.15 * pb.size);
+    this.cam.track(va.char.root.position, vb.char.root.position, _focus, weight);
   }
 
   private syncProjectiles(): void {
@@ -537,6 +630,30 @@ export class Game {
     this.sfx.play(name, { volume: volume / (1 + Math.max(0, d - 4) / 9), pan, pitch });
   }
 
+  /** Directional hit reaction: push direction and the blade's sweep, in the target's frame. */
+  private reactHit(attackerId: number, targetId: number, type: 'slash' | 'thrust' | 'blunt', heavy: boolean): void {
+    const w = this.world;
+    const tgt = w.get(targetId);
+    const att = w.get(attackerId);
+    const tv = tgt ? this.views.get(tgt.id) : undefined;
+    if (!tgt || !att || !tv) return;
+    const dx = tgt.pos.x - att.pos.x;
+    const dz = tgt.pos.z - att.pos.z;
+    const l = Math.hypot(dx, dz) || 1;
+    const c = Math.cos(tgt.yaw);
+    const s = Math.sin(tgt.yaw);
+    let lat = 0;
+    const m = att.act.kind === 'gale' ? MOVES.r_gale : att.act.kind === 'attack' ? att.act.move : undefined;
+    const av = this.views.get(att.id);
+    if (m && av) {
+      const sg = av.anim.sweepSign(m);
+      const wx = Math.cos(att.yaw) * sg;
+      const wz = -Math.sin(att.yaw) * sg;
+      lat = wx * c - wz * s;
+    }
+    tv.anim.onHit(tgt, (dx * c - dz * s) / l, (dx * s + dz * c) / l, lat, type, heavy);
+  }
+
   private blood(at: THREE.Vector3, n: number, dir?: THREE.Vector3, big = false): void {
     if (!this.settings.blood) {
       this.embers.emit(at, Math.ceil(n / 2), { color: 0xfff0d0, speed: 2.5, size: 0.05, life: 0.4 });
@@ -598,6 +715,7 @@ export class Game {
         break;
       }
       case 'hit': {
+        this.reactHit(ev.attacker, ev.target, ev.atkType, ev.heavy);
         const at = pos2(ev.pos, 1.25);
         const target = w.get(ev.target);
         const dir = target ? this.at(target.id).sub(this.at(ev.attacker)).setY(0.2).normalize() : undefined;
@@ -679,9 +797,14 @@ export class Game {
         this.cam.shake(0.35);
         const a = this.at(ev.performer);
         const b = this.at(ev.victim);
-        this.cam.cinematic(a, b, 'issen', 1.0);
+        this.cam.cinematic(a, b, 'issen', 2.5);
+        const perf = w.get(ev.performer);
+        if (perf) this.cineSubjects = { a: ev.performer, b: ev.victim, kind: 'issen', serial: perf.serial };
         this.env.gust(1);
-        setTimeout(() => this.blood(this.at(ev.victim, 1.2), 30, undefined, true), 380);
+        // The cut registers when the frozen victim starts to fall (victim timeline, not wall-clock:
+        // pause, slow-mo, hit-stop and restarts all stay in sync).
+        const victim = w.get(ev.victim);
+        if (victim) this.cues.push({ id: victim.id, serial: victim.serial, t: ISSEN_TL.victimFreeze, fire: () => this.blood(this.at(ev.victim, 1.2), 30, undefined, true) });
         break;
       }
       case 'perfectDodge':
@@ -699,8 +822,11 @@ export class Game {
       case 'finisherStart': {
         const a = this.at(ev.performer);
         const b = this.at(ev.victim);
-        const dur = ev.kind === 'slash' ? T.finisherSlashDur : ev.kind === 'thrust' ? T.finisherThrustDur : T.finisherFlowDur;
-        this.cam.cinematic(a, b, ev.kind === 'flow' ? 'flow' : 'finisher', (dur / 60) * 1.15);
+        const dur = FINISHER_TL[ev.kind as 'slash' | 'thrust' | 'flow'].dur;
+        // Ends when the performer's finisher ends (trackCinematic); the duration is only a safety net.
+        this.cam.cinematic(a, b, ev.kind === 'flow' ? 'flow' : 'finisher', (dur / 60) * 4);
+        const perf = w.get(ev.performer);
+        if (perf) this.cineSubjects = { a: ev.performer, b: ev.victim, kind: 'finisher', serial: perf.serial, fk: ev.kind };
         this.play('finisher', b, 0.9);
         break;
       }
@@ -864,4 +990,9 @@ function saveSettings(s: Settings): void {
   } catch {
     /* storage unavailable */
   }
+}
+
+function smooth01(x: number): number {
+  x = Math.max(0, Math.min(1, x));
+  return x * x * (3 - 2 * x);
 }

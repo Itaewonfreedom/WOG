@@ -27,6 +27,8 @@ export class Fighter {
   maxPosture: number;
   postureIdle = 0;
   act: Action = { kind: 'free', t: 0, dur: Infinity };
+  /** Increments every time a new action starts (lets the presentation detect restarts reliably). */
+  serial = 0;
   /** Enemy-only: ticks the big shield is knocked aside. */
   shieldOpen = 0;
   burning = 0;
@@ -80,6 +82,7 @@ export class Fighter {
 
   set(kind: ActionKind, dur: number, extra: Partial<Action> = {}): Action {
     this.act = { kind, t: 0, dur, ...extra };
+    this.serial++;
     return this.act;
   }
 

@@ -18,6 +18,7 @@ import { HITSTOP, T } from './tuning';
 import type { AttackType, DefenseRule, FinisherKind, MoveDef } from './types';
 import type { World } from './world';
 import { spawnEnemyProjectile, quickshotRelease } from './bow';
+import { FINISHER_TL, GALE_TL, ISSEN_TL, releaseTicks } from './timeline';
 
 const NORMAL: DefenseRule = { result: 'normal', dmgMul: 1, postureMul: 1 };
 const ENEMY_FRONT_ARC = (75 * Math.PI) / 180;
@@ -101,7 +102,7 @@ export function stepScripted(w: World, f: Fighter): Vec2 {
       if (tgt) {
         if (a.t <= 8) f.yaw = turnToward(f.yaw, f.yawTo(tgt.pos), 0.5);
         if (a.finisher !== 'flow') tgt.yaw = turnToward(tgt.yaw, tgt.yawTo(f.pos), 0.4);
-        const impact = T.finisherImpact[a.finisher as 'slash' | 'thrust' | 'flow'];
+        const impact = FINISHER_TL[a.finisher as 'slash' | 'thrust' | 'flow'].contact;
         if (a.t === impact && !a.done) {
           a.done = true;
           applyFinisherImpact(w, f, tgt, a.finisher ?? 'slash');
@@ -159,9 +160,14 @@ export function stepAttack(w: World, f: Fighter): void {
     w.emit({ type: 'glint', id: f.id, color: m.unblockable, move: m });
   }
   if (m.feint) return;
+  // The whoosh starts as the blade is released toward the target (see timeline.ts), the hit
+  // itself lands on the first active tick.
+  if (!m.projectile && a.t === Math.max(1, m.startup - releaseTicks(m))) w.emit({ type: 'swing', id: f.id, move: m });
   if (a.t === m.startup) {
-    w.emit({ type: 'swing', id: f.id, move: m });
-    if (m.projectile) spawnEnemyProjectile(w, f, m);
+    if (m.projectile) {
+      w.emit({ type: 'swing', id: f.id, move: m });
+      spawnEnemyProjectile(w, f, m);
+    }
     // A dodge that carried the player out of reach still counts as a perfect dodge
     // if the blow would have connected from where the dodge started.
     const p = w.player;
@@ -363,7 +369,7 @@ export function doIssen(w: World, p: Fighter, att: Fighter, hajiki: boolean, sta
   const dir = norm(sub(att.pos, p.pos));
   const to = add(att.pos, scale(dir, att.radius + 1.1));
   const kind: FinisherKind = standoff ? 'standoff' : hajiki ? 'hajiki' : 'issen';
-  p.set('issen', T.issenDur, { targetId: att.id, from: { ...p.pos }, to, travel: 5, finisher: kind });
+  p.set('issen', ISSEN_TL.dur, { targetId: att.id, from: { ...p.pos }, to, travel: ISSEN_TL.travel, finisher: kind });
   p.yaw = toYaw(dir);
   ps.hajikiTarget = -1;
   if (att.brain) att.brain.token = false;
@@ -376,7 +382,7 @@ export function doIssen(w: World, p: Fighter, att: Fighter, hajiki: boolean, sta
     else checkBossPhase(w, att);
   } else {
     att.hp = 0;
-    att.set('finished', 56, { finisher: kind, targetId: p.id });
+    att.set('finished', ISSEN_TL.victimDur, { finisher: kind, targetId: p.id });
     att.deathKind = kind;
     killBookkeeping(w, att, kind);
   }
@@ -647,13 +653,14 @@ export function findFinisherTarget(w: World, p: Fighter, exclude = -1): Finisher
 }
 
 export function startFinisher(w: World, p: Fighter, e: Fighter, kind: 'slash' | 'thrust' | 'flow'): void {
-  const dur = kind === 'slash' ? T.finisherSlashDur : kind === 'thrust' ? T.finisherThrustDur : T.finisherFlowDur;
+  const tl = FINISHER_TL[kind];
+  const dur = tl.dur;
   const dir = norm(sub(e.pos, p.pos));
-  const stand = (kind === 'flow' ? 0.85 : 1.05) + e.radius * 0.6;
+  const stand = tl.stand + e.radius * 0.6;
   const to = sub(e.pos, scale(dir, stand));
-  p.set('finisher', dur, { finisher: kind, targetId: e.id, from: { ...p.pos }, to, travel: 7 });
+  p.set('finisher', dur, { finisher: kind, targetId: e.id, from: { ...p.pos }, to, travel: tl.dash });
   p.yaw = toYaw(dir);
-  e.set('finished', dur + 6, { finisher: kind, targetId: p.id });
+  e.set('finished', tl.victimDur, { finisher: kind, targetId: p.id });
   e.glint = null;
   if (kind !== 'flow') e.yaw = toYaw(scale(dir, -1));
   if (e.brain) e.brain.token = false;
@@ -705,7 +712,7 @@ export function terrify(w: World, center: Vec2, weakness: boolean): void {
 // ─────────────────────────────────────────────────────────────────────────────
 // 질풍참 (Gale strike, resolve special)
 // ─────────────────────────────────────────────────────────────────────────────
-export const GALE_SEG = 15;
+export const GALE_SEG = GALE_TL.seg;
 
 function galeMotion(w: World, f: Fighter): Vec2 {
   const a = f.act;
@@ -730,7 +737,7 @@ export function stepGale(w: World, f: Fighter): void {
   const seg = Math.floor((a.t - 1) / GALE_SEG);
   const local = (a.t - 1) % GALE_SEG;
   const tgt = w.get(w.ps.galeTargets[seg]);
-  if (local === 3 && tgt && tgt.targetable) {
+  if (local === GALE_TL.contact && tgt && tgt.targetable) {
     w.emit({ type: 'swing', id: f.id, move: MOVES.r_gale });
     resolveOnEnemy(w, f, tgt, MOVES.r_gale);
   }

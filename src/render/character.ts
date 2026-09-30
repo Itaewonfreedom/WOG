@@ -35,7 +35,6 @@ const LOOKS: Record<CharKind, Look> = {
 
 const Y = new THREE.Vector3(0, 1, 0);
 const _a = new THREE.Vector3();
-const _b = new THREE.Vector3();
 const _c = new THREE.Vector3();
 const _d = new THREE.Vector3();
 const _m = new THREE.Matrix4();
@@ -77,22 +76,71 @@ class Limb {
   }
 }
 
-/** Solve a 2-bone chain: returns joint position into `out`. */
-function solveIK(root: THREE.Vector3, target: THREE.Vector3, l1: number, l2: number, pole: THREE.Vector3, out: THREE.Vector3): THREE.Vector3 {
-  _b.subVectors(target, root);
-  let d = _b.length();
-  const maxD = l1 + l2 - 1e-4;
-  const minD = Math.abs(l1 - l2) + 1e-4;
-  if (d < 1e-5) _b.set(0, -1, 0);
-  else _b.multiplyScalar(1 / d);
-  d = Math.min(maxD, Math.max(minD, d));
-  const cosA = (l1 * l1 + d * d - l2 * l2) / (2 * l1 * d);
-  const sinA = Math.sqrt(Math.max(0, 1 - cosA * cosA));
-  // Component of the pole perpendicular to the chain direction.
-  _c.copy(pole).addScaledVector(_b, -pole.dot(_b));
-  if (_c.lengthSq() < 1e-8) _c.set(0, 0, 1).addScaledVector(_b, -_b.z);
-  _c.normalize();
-  return out.copy(root).addScaledVector(_b, l1 * cosA).addScaledVector(_c, l1 * sinA);
+const Z = new THREE.Vector3(0, 0, 1);
+const ARM = 0.58;
+const LEG = 0.875;
+const ANKLE = 0.07;
+const V = () => new THREE.Vector3();
+/** Scratch for applyPose (not re-entrant; nothing is allocated per frame). */
+const S = {
+  hipQ: new THREE.Quaternion(),
+  chestQ: new THREE.Quaternion(),
+  bodyQ: new THREE.Quaternion(),
+  headQ: new THREE.Quaternion(),
+  q: new THREE.Quaternion(),
+  e: new THREE.Euler(),
+  m: new THREE.Matrix4(),
+  pivot: V(), chestTop: V(), shR: V(), shL: V(), headPos: V(), hipR: V(), hipL: V(),
+  handR: V(), handL: V(), elbowR: V(), elbowL: V(), poleR: V(), poleL: V(),
+  ankR: V(), ankL: V(), footR: V(), footL: V(), kneeR: V(), kneeL: V(), poleKR: V(), poleKL: V(),
+  pel: V(), bladeR: V(), edgeR: V(), bladeL: V(), edgeL: V(), tmp: V(), tmp2: V(),
+};
+
+/** Whole-body rotation around the pelvis (S.pivot / S.bodyQ, set by applyPose). */
+function xf(v: THREE.Vector3): THREE.Vector3 {
+  return v.sub(S.pivot).applyQuaternion(S.bodyQ).add(S.pivot);
+}
+
+/** Points carried by the whole-body rotation (rolls / falls). */
+const BODY_POINTS = [S.chestTop, S.shR, S.shL, S.headPos, S.hipR, S.hipL, S.elbowR, S.elbowL, S.handR, S.handL, S.kneeR, S.kneeL, S.ankR, S.ankL, S.footR, S.footL];
+
+/**
+ * 2-bone IK with a temporally smoothed bend direction. A raw pole projection flips 180° when the
+ * limb passes through the pole axis; here the bend plane follows the pole at a finite rate and
+ * keeps its previous side when the pole becomes degenerate.
+ */
+class Bend {
+  private readonly dir = new THREE.Vector3();
+  private init = false;
+  private static readonly t = new THREE.Vector3();
+  private static readonly u = new THREE.Vector3();
+
+  solve(root: THREE.Vector3, target: THREE.Vector3, l1: number, l2: number, pole: THREE.Vector3, dt: number, out: THREE.Vector3): THREE.Vector3 {
+    const ax = Bend.t.subVectors(target, root);
+    let d = ax.length();
+    if (d < 1e-5) ax.set(0, -1, 0);
+    else ax.multiplyScalar(1 / d);
+    d = Math.min(l1 + l2 - 1e-4, Math.max(Math.abs(l1 - l2) + 1e-4, d));
+    const want = Bend.u.copy(pole).addScaledVector(ax, -pole.dot(ax));
+    const wl = want.length();
+    const pl = pole.length() || 1;
+    if (!this.init) {
+      if (wl < 1e-4) want.set(0, 0, 1).addScaledVector(ax, -ax.z);
+      this.dir.copy(want).normalize();
+      this.init = true;
+    } else if (wl > 0.15 * pl) {
+      want.multiplyScalar(1 / wl);
+      // Follow quickly, but never snap across in one frame.
+      this.dir.lerp(want, dt > 0 ? 1 - Math.exp(-dt * 30) : 0);
+    }
+    // Keep the bend perpendicular to the current limb axis.
+    this.dir.addScaledVector(ax, -this.dir.dot(ax));
+    if (this.dir.lengthSq() < 1e-8) this.dir.copy(want.lengthSq() > 1e-8 ? want : _c.set(0, 0, 1).addScaledVector(ax, -ax.z));
+    this.dir.normalize();
+    const cosA = (l1 * l1 + d * d - l2 * l2) / (2 * l1 * d);
+    const sinA = Math.sqrt(Math.max(0, 1 - cosA * cosA));
+    return out.copy(root).addScaledVector(ax, l1 * cosA).addScaledVector(this.dir, l1 * sinA);
+  }
 }
 
 /** Orient `obj` so its +Y follows `dir` and its +Z follows `up` (orthogonalized). */
@@ -304,6 +352,13 @@ export class CharacterView {
   private armorBroken = false;
   /** Cape swing state. */
   private capeLift = 0;
+  /** Two-handed weapons: left-hand offset along the blade from the right hand (null = one-handed). */
+  private readonly grip: number | null;
+  /** Temporally smoothed IK bend planes (no elbow / knee flips). */
+  private readonly bendR = new Bend();
+  private readonly bendL = new Bend();
+  private readonly bendKR = new Bend();
+  private readonly bendKL = new Bend();
 
   // Solved joint positions (local space), exposed for effects.
   readonly jHandR = new THREE.Vector3();
@@ -325,6 +380,7 @@ export class CharacterView {
     const trim = m(look.trim, 0.6, look.armor ? 0.5 : 0);
     const armorMat = look.armor ? m(look.cloth, 0.45, 0.35) : cloth;
     const bulk = look.bulk;
+    this.grip = look.weapon === 'katana' ? -0.2 : look.weapon === 'nodachi' ? -0.25 : look.weapon === 'yari' ? 0.55 : null;
 
     // Torso: tapered, wider at the shoulders.
     this.torso = new THREE.Mesh(new THREE.CylinderGeometry(0.2 * bulk, 0.15 * bulk, 0.52, 10), armorMat);
@@ -521,62 +577,69 @@ export class CharacterView {
     return g;
   }
 
-  /** Solve IK and place every part for `pose`. */
+  /** Solve IK and place every part for `pose`. `dt` is simulation time (0 during hit-stop / pause). */
   applyPose(p: Pose, speed: number, dt: number): void {
     const bulk = this.look.bulk;
     const pelvis = p.pelvis;
-    const hipQ = new THREE.Quaternion().setFromAxisAngle(Y, p.pelvisYaw);
-    const chestQ = new THREE.Quaternion().setFromEuler(new THREE.Euler(p.lean, p.pelvisYaw + p.torsoYaw, p.roll, 'YXZ'));
+    const hipQ = S.hipQ.setFromAxisAngle(Y, p.pelvisYaw);
+    const chestQ = S.chestQ.setFromEuler(S.e.set(p.lean, p.pelvisYaw + p.torsoYaw, p.roll, 'YXZ'));
 
     // Whole-body rotation around the pelvis (for rolls / falls).
-    const bodyQ = new THREE.Quaternion().setFromEuler(new THREE.Euler(p.bodyPitch, 0, p.bodyRoll, 'XYZ'));
-    const pivot = pelvis.clone();
-    const xf = (v: THREE.Vector3) => v.sub(pivot).applyQuaternion(bodyQ).add(pivot);
-    const xq = (q: THREE.Quaternion) => q.premultiply(bodyQ);
+    const bodyQ = S.bodyQ.setFromEuler(S.e.set(p.bodyPitch, 0, p.bodyRoll, 'XYZ'));
+    S.pivot.copy(pelvis);
 
-    const chestTop = new THREE.Vector3(0, 0.5, 0).applyQuaternion(chestQ).add(pelvis);
-    const shR = new THREE.Vector3(-0.19 * bulk, 0.45, 0).applyQuaternion(chestQ).add(pelvis);
-    const shL = new THREE.Vector3(0.19 * bulk, 0.45, 0).applyQuaternion(chestQ).add(pelvis);
-    const headQ = chestQ.clone().multiply(new THREE.Quaternion().setFromEuler(new THREE.Euler(p.headPitch - p.lean * 0.6, p.headYaw, 0, 'YXZ')));
-    const headPos = new THREE.Vector3(0, 0.17, 0.01).applyQuaternion(headQ).add(chestTop);
-    const hipR = new THREE.Vector3(-0.1 * bulk, -0.02, 0).applyQuaternion(hipQ).add(pelvis);
-    const hipL = new THREE.Vector3(0.1 * bulk, -0.02, 0).applyQuaternion(hipQ).add(pelvis);
+    const chestTop = S.chestTop.set(0, 0.5, 0).applyQuaternion(chestQ).add(pelvis);
+    const shR = S.shR.set(-0.19 * bulk, 0.45, 0).applyQuaternion(chestQ).add(pelvis);
+    const shL = S.shL.set(0.19 * bulk, 0.45, 0).applyQuaternion(chestQ).add(pelvis);
+    const headQ = S.headQ.copy(chestQ).multiply(S.q.setFromEuler(S.e.set(p.headPitch - p.lean * 0.6, p.headYaw, 0, 'YXZ')));
+    const headPos = S.headPos.set(0, 0.17, 0.01).applyQuaternion(headQ).add(chestTop);
+    const hipR = S.hipR.set(-0.1 * bulk, -0.02, 0).applyQuaternion(hipQ).add(pelvis);
+    const hipL = S.hipL.set(0.1 * bulk, -0.02, 0).applyQuaternion(hipQ).add(pelvis);
 
-    // Arms
-    const poleR = new THREE.Vector3(-0.7, -0.5, -0.5).applyQuaternion(chestQ);
-    const poleL = new THREE.Vector3(0.7, -0.5, -0.5).applyQuaternion(chestQ);
-    const elbowR = solveIK(shR, p.handR, 0.29, 0.29, poleR, new THREE.Vector3());
-    const elbowL = solveIK(shL, p.handL, 0.29, 0.29, poleL, new THREE.Vector3());
-    const handR = p.handR.clone();
-    const handL = p.handL.clone();
-    // Keep hands reachable (IK clamps elbow, re-derive the hand).
-    clampReach(shR, handR, 0.58);
-    clampReach(shL, handL, 0.58);
+    // Hands: keep them reachable first, then enforce the two-handed grip, then solve the elbows
+    // (so the elbows always match the hands that are actually drawn).
+    const handR = S.handR.copy(p.handR);
+    const handL = S.handL.copy(p.handL);
+    clampReach(shR, handR, ARM);
+    if (this.grip !== null) {
+      handL.copy(handR).addScaledVector(p.bladeR, this.grip);
+      if (handL.distanceTo(shL) > ARM) {
+        clampReach(shL, handL, ARM);
+        handR.copy(handL).addScaledVector(p.bladeR, -this.grip);
+        clampReach(shR, handR, ARM);
+        handL.copy(handR).addScaledVector(p.bladeR, this.grip);
+      }
+    } else clampReach(shL, handL, ARM);
+    const poleR = S.poleR.set(-0.7, -0.5, -0.5).applyQuaternion(chestQ);
+    const poleL = S.poleL.set(0.7, -0.5, -0.5).applyQuaternion(chestQ);
+    const elbowR = this.bendR.solve(shR, handR, 0.29, 0.29, poleR, dt, S.elbowR);
+    const elbowL = this.bendL.solve(shL, handL, 0.29, 0.29, poleL, dt, S.elbowL);
 
-    // Legs (knees point forward-ish).
-    const poleLeg = new THREE.Vector3(0, 0.2, 1).applyQuaternion(hipQ);
-    const footR = p.footR.clone();
-    const footL = p.footL.clone();
-    const kneeR = solveIK(hipR, footR.clone().setY(footR.y + 0.07), 0.44, 0.44, poleLeg, new THREE.Vector3());
-    const kneeL = solveIK(hipL, footL.clone().setY(footL.y + 0.07), 0.44, 0.44, poleLeg, new THREE.Vector3());
-    const ankR = footR.clone().setY(footR.y + 0.07);
-    const ankL = footL.clone().setY(footL.y + 0.07);
-    clampReach(hipR, ankR, 0.875);
-    clampReach(hipL, ankL, 0.875);
+    // Legs: knees follow the hips and the planted feet's heading. The ankle is clamped to the
+    // leg's reach and the foot stays attached to it.
+    const ankR = S.ankR.copy(p.footR).setY(p.footR.y + ANKLE);
+    const ankL = S.ankL.copy(p.footL).setY(p.footL.y + ANKLE);
+    clampReach(hipR, ankR, LEG);
+    clampReach(hipL, ankL, LEG);
+    const footR = S.footR.copy(ankR).setY(ankR.y - ANKLE);
+    const footL = S.footL.copy(ankL).setY(ankL.y - ANKLE);
+    const poleKR = S.poleKR.set(Math.sin(p.pelvisYaw) + Math.sin(p.footYawR), 0.4, Math.cos(p.pelvisYaw) + Math.cos(p.footYawR));
+    const poleKL = S.poleKL.set(Math.sin(p.pelvisYaw) + Math.sin(p.footYawL), 0.4, Math.cos(p.pelvisYaw) + Math.cos(p.footYawL));
+    const kneeR = this.bendKR.solve(hipR, ankR, 0.44, 0.44, poleKR, dt, S.kneeR);
+    const kneeL = this.bendKL.solve(hipL, ankL, 0.44, 0.44, poleKL, dt, S.kneeL);
 
-    for (const v of [chestTop, shR, shL, headPos, hipR, hipL, elbowR, elbowL, handR, handL, kneeR, kneeL, ankR, ankL, footR, footL]) xf(v);
-    const pel = pelvis.clone();
-    xf(pel);
-    xq(chestQ);
-    xq(hipQ);
-    xq(headQ);
+    for (const v of BODY_POINTS) xf(v);
+    const pel = xf(S.pel.copy(pelvis));
+    chestQ.premultiply(bodyQ);
+    hipQ.premultiply(bodyQ);
+    headQ.premultiply(bodyQ);
 
     // Torso & pelvis
-    this.torso.position.copy(new THREE.Vector3(0, 0.27, 0).applyQuaternion(chestQ).add(pel));
+    this.torso.position.set(0, 0.27, 0).applyQuaternion(chestQ).add(pel);
     this.torso.quaternion.copy(chestQ);
     this.pelvisMesh.position.copy(pel);
     this.pelvisMesh.quaternion.copy(hipQ);
-    this.neck.place(chestTop.clone().sub(new THREE.Vector3(0, 0.03, 0)), headPos);
+    this.neck.place(S.tmp.copy(chestTop).setY(chestTop.y - 0.03), headPos);
     this.head.position.copy(headPos);
     this.head.quaternion.copy(headQ);
     this.jHead.copy(headPos);
@@ -598,50 +661,53 @@ export class CharacterView {
     this.handLMesh.position.copy(handL);
     this.footRMesh.position.copy(footR);
     this.footLMesh.position.copy(footL);
-    this.footRMesh.quaternion.copy(hipQ);
-    this.footLMesh.quaternion.copy(hipQ);
+    // Planted feet keep their own heading (the body may turn over them).
+    this.footRMesh.quaternion.setFromAxisAngle(Y, p.footYawR).premultiply(bodyQ);
+    this.footLMesh.quaternion.setFromAxisAngle(Y, p.footYawL).premultiply(bodyQ);
     this.jHandR.copy(handR);
     this.jHandL.copy(handL);
 
     if (this.skirt) {
-      this.skirt.position.copy(pel).add(new THREE.Vector3(0, 0.1, 0));
+      this.skirt.position.copy(pel);
+      this.skirt.position.y += 0.1;
       // Let the skirt follow the stride a little.
       const stride = (footL.z - footR.z) * 0.25;
-      this.skirt.quaternion.copy(hipQ).multiply(new THREE.Quaternion().setFromEuler(new THREE.Euler(stride * 0.4, 0, 0)));
+      this.skirt.quaternion.copy(hipQ).multiply(S.q.setFromEuler(S.e.set(stride * 0.4, 0, 0)));
     }
     if (this.cape) {
-      this.capeLift += (Math.min(1, speed / 6) - this.capeLift) * Math.min(1, dt * 5);
-      this.cape.position.copy(new THREE.Vector3(0, 0.47, -0.13 * bulk).applyQuaternion(chestQ).add(pel));
-      this.cape.quaternion.copy(chestQ).multiply(new THREE.Quaternion().setFromEuler(new THREE.Euler(0.12 + this.capeLift * 0.9 - p.lean * 0.5, 0, 0)));
+      this.capeLift += (Math.min(1, speed / 6) - this.capeLift) * (1 - Math.exp(-dt * 5));
+      this.cape.position.set(0, 0.47, -0.13 * bulk).applyQuaternion(chestQ).add(pel);
+      this.cape.quaternion.copy(chestQ).multiply(S.q.setFromEuler(S.e.set(0.12 + this.capeLift * 0.9 - p.lean * 0.5, 0, 0)));
     }
     if (this.chestPlate) {
-      this.chestPlate.position.copy(new THREE.Vector3(0, 0.3, 0.1 * bulk).applyQuaternion(chestQ).add(pel));
+      this.chestPlate.position.set(0, 0.3, 0.1 * bulk).applyQuaternion(chestQ).add(pel);
       this.chestPlate.quaternion.copy(chestQ);
     }
-    this.shoulderPads.forEach((pad, i) => {
-      const s = i === 0 ? shR : shL;
-      pad.position.copy(s).add(new THREE.Vector3(0, 0.03, 0));
-      pad.quaternion.copy(chestQ).multiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 0, 1), (i === 0 ? 1 : -1) * 0.5));
-    });
+    for (let i = 0; i < this.shoulderPads.length; i++) {
+      const pad = this.shoulderPads[i];
+      pad.position.copy(i === 0 ? shR : shL);
+      pad.position.y += 0.03;
+      pad.quaternion.copy(chestQ).multiply(S.q.setFromAxisAngle(Z, (i === 0 ? 1 : -1) * 0.5));
+    }
 
     // Weapon in the right hand (the ranger slips the short sword into its hip scabbard to shoot).
-    const bladeR = p.bladeR.clone().applyQuaternion(bodyQ);
-    const edgeR = p.edgeR.clone().applyQuaternion(bodyQ);
+    const bladeR = S.bladeR.copy(p.bladeR).applyQuaternion(bodyQ);
+    const edgeR = S.edgeR.copy(p.edgeR).applyQuaternion(bodyQ);
     if (this.kind === 'player' && p.bowInHand > 0.5) {
-      this.weapon.position.copy(new THREE.Vector3(0.2, -0.02, 0.06).applyQuaternion(hipQ).add(pel));
-      orient(this.weapon, new THREE.Vector3(0.15, -0.55, -1).applyQuaternion(hipQ), new THREE.Vector3(1, 0, 0).applyQuaternion(hipQ));
+      this.weapon.position.set(0.2, -0.02, 0.06).applyQuaternion(hipQ).add(pel);
+      orient(this.weapon, S.tmp.set(0.15, -0.55, -1).applyQuaternion(hipQ), S.tmp2.set(1, 0, 0).applyQuaternion(hipQ));
     } else {
       this.weapon.position.copy(handR);
       orient(this.weapon, bladeR, edgeR);
     }
 
     // Off-hand item.
-    const bladeL = p.bladeL.clone().applyQuaternion(bodyQ);
-    const edgeL = p.edgeL.clone().applyQuaternion(bodyQ);
+    const bladeL = S.bladeL.copy(p.bladeL).applyQuaternion(bodyQ);
+    const edgeL = S.edgeL.copy(p.edgeL).applyQuaternion(bodyQ);
     if (this.offhand) {
       if (this.offKind === 'buckler') {
         // Strapped on the forearm, just behind the fist.
-        const fore = handL.clone().sub(elbowL).normalize();
+        const fore = S.tmp.subVectors(handL, elbowL).normalize();
         this.offhand.position.copy(handL).addScaledVector(fore, -0.07).addScaledVector(bladeL, 0.03);
         orient(this.offhand, bladeL, fore);
       } else if (this.offKind === 'tate') {
@@ -661,22 +727,21 @@ export class CharacterView {
         orient(bow, bladeL, edgeL);
       } else {
         // Slung across the back.
-        bow.position.copy(new THREE.Vector3(0.02, 0.28, -0.17 * bulk).applyQuaternion(chestQ).add(pel));
-        bow.quaternion.copy(chestQ).multiply(new THREE.Quaternion().setFromEuler(new THREE.Euler(0, Math.PI, 0.55)));
+        bow.position.set(0.02, 0.28, -0.17 * bulk).applyQuaternion(chestQ).add(pel);
+        bow.quaternion.copy(chestQ).multiply(S.q.setFromEuler(S.e.set(0, Math.PI, 0.55)));
       }
       this.updateString(this.rangerBow.string, bow, this.rangerBow.tips, handR, p.bowInHand > 0.5 ? p.bowDraw : 0);
     }
     if (this.quiver) {
-      this.quiver.position.copy(new THREE.Vector3(-0.12, 0.3, -0.16 * bulk).applyQuaternion(chestQ).add(pel));
-      this.quiver.quaternion.copy(chestQ).multiply(new THREE.Quaternion().setFromEuler(new THREE.Euler(0.15, 0, -0.35)));
+      this.quiver.position.set(-0.12, 0.3, -0.16 * bulk).applyQuaternion(chestQ).add(pel);
+      this.quiver.quaternion.copy(chestQ).multiply(S.q.setFromEuler(S.e.set(0.15, 0, -0.35)));
     }
     if (this.nocked) {
       const show = (this.kind === 'archer' ? 1 : p.bowInHand) > 0.5 && p.bowDraw > 0.05;
       this.nocked.visible = show;
       if (show) {
         const bowGroup = this.rangerBow ? this.rangerBow.group : this.offhand!;
-        const grip = bowGroup.position;
-        const dir = grip.clone().sub(handR);
+        const dir = S.tmp.subVectors(bowGroup.position, handR);
         const l = dir.length();
         this.nocked.position.copy(handR);
         this.nocked.quaternion.setFromUnitVectors(Y, dir.normalize());
@@ -689,9 +754,9 @@ export class CharacterView {
     const pos = line.geometry.getAttribute('position') as THREE.BufferAttribute;
     // Draw point in the bow's local space.
     bow.updateMatrix();
-    const inv = new THREE.Matrix4().copy(bow.matrix).invert();
-    const mid = new THREE.Vector3(0, (tips[0].y + tips[1].y) / 2, tips[0].z);
-    const hand = handR.clone().applyMatrix4(inv);
+    const inv = S.m.copy(bow.matrix).invert();
+    const mid = S.tmp.set(0, (tips[0].y + tips[1].y) / 2, tips[0].z);
+    const hand = S.tmp2.copy(handR).applyMatrix4(inv);
     mid.lerp(hand, Math.min(1, draw * 1.15));
     pos.setXYZ(0, tips[0].x, tips[0].y, tips[0].z);
     pos.setXYZ(1, mid.x, mid.y, mid.z);
@@ -741,8 +806,7 @@ export class CharacterView {
     s.scale.setScalar((0.25 + 0.55 * k) * (1 + 0.15 * Math.sin(t * 0.9)));
     s.material.rotation = t * 0.05;
     // Near the weapon tip.
-    const tip = new THREE.Vector3(0, this.weaponTip * 0.8, 0).applyQuaternion(this.weapon.quaternion).add(this.weapon.position);
-    s.position.copy(tip);
+    s.position.set(0, this.weaponTip * 0.8, 0).applyQuaternion(this.weapon.quaternion).add(this.weapon.position);
   }
 
   dispose(): void {

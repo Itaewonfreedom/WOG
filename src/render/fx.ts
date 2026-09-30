@@ -1,33 +1,58 @@
 import * as THREE from 'three';
+import { slerpDir } from './pose';
 
 // ── Sword trail ─────────────────────────────────────────────────────────────
-const TRAIL_SAMPLES = 16;
-const SUB = 3;
+const TRAIL_CAP = 48;
+/** Seconds of simulation time a blade sample stays visible (fades linearly with age). */
+const TRAIL_LIFE = 0.1;
+/** Ribbon cross-sections, spread evenly over TRAIL_LIFE (so the ribbon is the same at any refresh rate). */
+const TRAIL_VERTS = 32;
+/** Samples closer than this replace the newest one (very high refresh rates). */
+const TRAIL_MIN_DT = 1 / 240;
+/** A jump of the blade base larger than this between samples starts a new ribbon (teleports). */
+const TRAIL_JUMP = 1.2;
 
-/** Ribbon following the blade (base→tip) while a strike is active. */
+const _tb = new THREE.Vector3();
+const _tt = new THREE.Vector3();
+const _da = new THREE.Vector3();
+const _db = new THREE.Vector3();
+const _dk = new THREE.Vector3();
+
+/**
+ * Ribbon following the blade (base→tip) while a strike is active.
+ * Samples live in a ring buffer stamped with simulation time: nothing is added while time is
+ * frozen (hit-stop, pause), the ribbon is rebuilt on a fixed time grid (30/60/120 Hz look the
+ * same), the tip is interpolated along an arc around the base, and separate strikes (or a
+ * teleport) never get joined by a long bridge.
+ */
 export class SwordTrail {
   readonly mesh: THREE.Mesh;
-  private readonly bases: THREE.Vector3[] = [];
-  private readonly tips: THREE.Vector3[] = [];
-  private readonly ages: number[] = [];
+  private readonly sb = new Float32Array(TRAIL_CAP * 3);
+  private readonly st = new Float32Array(TRAIL_CAP * 3);
+  private readonly stime = new Float64Array(TRAIL_CAP);
+  private readonly sseg = new Int32Array(TRAIL_CAP);
+  private head = 0;
+  private count = 0;
+  private now = 0;
+  private segId = 0;
+  private wasActive = false;
+  private lastKey = Number.NaN;
   private readonly pos: Float32Array;
   private readonly alpha: Float32Array;
+  private readonly index: Uint16Array;
   private readonly geo: THREE.BufferGeometry;
   private readonly mat: THREE.ShaderMaterial;
 
   constructor(color: number) {
-    const verts = TRAIL_SAMPLES * SUB * 2;
+    const verts = TRAIL_VERTS * 2;
     this.pos = new Float32Array(verts * 3);
     this.alpha = new Float32Array(verts);
+    this.index = new Uint16Array((TRAIL_VERTS - 1) * 6);
     this.geo = new THREE.BufferGeometry();
     this.geo.setAttribute('position', new THREE.BufferAttribute(this.pos, 3));
     this.geo.setAttribute('alpha', new THREE.BufferAttribute(this.alpha, 1));
-    const idx: number[] = [];
-    for (let i = 0; i < TRAIL_SAMPLES * SUB - 1; i++) {
-      const a = i * 2;
-      idx.push(a, a + 1, a + 2, a + 1, a + 3, a + 2);
-    }
-    this.geo.setIndex(idx);
+    this.geo.setIndex(new THREE.BufferAttribute(this.index, 1));
+    this.geo.setDrawRange(0, 0);
     this.mat = new THREE.ShaderMaterial({
       uniforms: { color: { value: new THREE.Color(color) }, intensity: { value: 1 } },
       vertexShader: `attribute float alpha; varying float vA; varying float vEdge;
@@ -48,51 +73,135 @@ export class SwordTrail {
     this.mat.uniforms.intensity.value = intensity;
   }
 
-  /** Call once per rendered frame. */
-  update(base: THREE.Vector3, tip: THREE.Vector3, active: boolean, dt: number): void {
-    for (let i = 0; i < this.ages.length; i++) this.ages[i] += dt;
+  /** Samples currently stored (for tests). */
+  get sampleCount(): number {
+    return this.count;
+  }
+
+  /** Index buffer entries drawn (for tests). */
+  get drawnIndices(): number {
+    return this.geo.drawRange.count;
+  }
+
+  /**
+   * Call once per rendered frame. `dt` is simulation time (0 while frozen); `key` identifies the
+   * strike (e.g. the action serial) — a new key starts a new ribbon.
+   */
+  update(base: THREE.Vector3, tip: THREE.Vector3, active: boolean, dt: number, key = 0): void {
+    this.now += dt;
     if (active) {
-      this.bases.unshift(base.clone());
-      this.tips.unshift(tip.clone());
-      this.ages.unshift(0);
-      if (this.bases.length > TRAIL_SAMPLES) {
-        this.bases.pop();
-        this.tips.pop();
-        this.ages.pop();
+      if (!this.wasActive || key !== this.lastKey) this.segId++;
+      const newest = this.count > 0 ? this.head : -1;
+      const sameSeg = newest >= 0 && this.sseg[newest] === this.segId;
+      // Frozen time adds nothing (no stacked duplicates during hit-stop / pause).
+      if (!sameSeg || dt > 0) {
+        let replace = false;
+        if (sameSeg) {
+          const i = newest * 3;
+          const jump = Math.hypot(base.x - this.sb[i], base.y - this.sb[i + 1], base.z - this.sb[i + 2]);
+          if (jump > TRAIL_JUMP) this.segId++;
+          else if (this.now - this.stime[newest] < TRAIL_MIN_DT) replace = true;
+        }
+        if (!replace) {
+          this.head = this.count === 0 ? 0 : (this.head + 1) % TRAIL_CAP;
+          this.count = Math.min(TRAIL_CAP, this.count + 1);
+        }
+        const h = this.head;
+        this.sb[h * 3] = base.x;
+        this.sb[h * 3 + 1] = base.y;
+        this.sb[h * 3 + 2] = base.z;
+        this.st[h * 3] = tip.x;
+        this.st[h * 3 + 1] = tip.y;
+        this.st[h * 3 + 2] = tip.z;
+        this.stime[h] = this.now;
+        this.sseg[h] = this.segId;
       }
     }
-    const n = this.bases.length;
-    let v = 0;
-    for (let i = 0; i < TRAIL_SAMPLES * SUB; i++) {
-      const fi = i / SUB;
-      const i0 = Math.min(n - 1, Math.floor(fi));
-      const i1 = Math.min(n - 1, i0 + 1);
-      const f = fi - Math.floor(fi);
-      if (n < 2 || i0 >= n - 1) {
+    this.wasActive = active;
+    this.lastKey = key;
+    // Forget samples that have fully faded (keep one older sample to interpolate the tail end).
+    while (this.count > 1 && this.now - this.stime[this.idx(this.count - 2)] >= TRAIL_LIFE) this.count--;
+    if (this.count === 1 && this.now - this.stime[this.head] > TRAIL_LIFE) this.count = 0;
+    this.build();
+  }
+
+  private idx(m: number): number {
+    return (this.head - m + TRAIL_CAP * 2) % TRAIL_CAP;
+  }
+
+  /** Blade at time `tj` (interpolated inside one strike); returns the segment id or -1. */
+  private sampleAt(tj: number, cursor: { m: number }, outB: THREE.Vector3, outT: THREE.Vector3): number {
+    if (this.count === 0) return -1;
+    const newest = this.stime[this.head];
+    if (tj > newest + 1e-7) return -1;
+    while (cursor.m < this.count && this.stime[this.idx(cursor.m)] > tj) cursor.m++;
+    if (cursor.m >= this.count) return -1;
+    const k = this.idx(cursor.m);
+    if (cursor.m === 0) {
+      outB.fromArray(this.sb, k * 3);
+      outT.fromArray(this.st, k * 3);
+      return this.sseg[k];
+    }
+    const k1 = this.idx(cursor.m - 1);
+    if (this.sseg[k] !== this.sseg[k1]) return -1;
+    const t0 = this.stime[k];
+    const t1 = this.stime[k1];
+    const f = t1 > t0 ? (tj - t0) / (t1 - t0) : 0;
+    outB.fromArray(this.sb, k * 3);
+    _db.fromArray(this.sb, k1 * 3);
+    // Tip swings around the base: interpolate the blade direction, not the tip position.
+    _da.fromArray(this.st, k * 3).sub(outB);
+    const la = _da.length();
+    _dk.fromArray(this.st, k1 * 3).sub(_db);
+    const lb = _dk.length();
+    outB.lerp(_db, f);
+    if (la > 1e-5 && lb > 1e-5) {
+      slerpDir(_da.multiplyScalar(1 / la), _dk.multiplyScalar(1 / lb), f, _da);
+      outT.copy(outB).addScaledVector(_da, la + (lb - la) * f);
+    } else outT.fromArray(this.st, k * 3).lerp(_dk.fromArray(this.st, k1 * 3), f);
+    return this.sseg[k];
+  }
+
+  private readonly cursor = { m: 0 };
+
+  private build(): void {
+    let n = 0;
+    let prevSeg = -1;
+    this.cursor.m = 0;
+    for (let j = 0; j < TRAIL_VERTS; j++) {
+      const age = (TRAIL_LIFE * j) / (TRAIL_VERTS - 1);
+      const seg = this.sampleAt(this.now - age, this.cursor, _tb, _tt);
+      const v = j * 2;
+      if (seg >= 0) {
+        this.pos[v * 3] = _tb.x;
+        this.pos[v * 3 + 1] = _tb.y;
+        this.pos[v * 3 + 2] = _tb.z;
+        this.pos[v * 3 + 3] = _tt.x;
+        this.pos[v * 3 + 4] = _tt.y;
+        this.pos[v * 3 + 5] = _tt.z;
+        const f = 1 - age / TRAIL_LIFE;
+        const k = f * f * 0.6;
+        this.alpha[v] = k;
+        this.alpha[v + 1] = k;
+        if (j > 0 && seg === prevSeg) {
+          const a = v - 2;
+          this.index[n++] = a;
+          this.index[n++] = a + 1;
+          this.index[n++] = a + 2;
+          this.index[n++] = a + 1;
+          this.index[n++] = a + 3;
+          this.index[n++] = a + 2;
+        }
+      } else {
         this.alpha[v] = 0;
         this.alpha[v + 1] = 0;
-        this.pos.fill(0, v * 3, v * 3 + 6);
-        v += 2;
-        continue;
       }
-      const b = this.bases[i0].clone().lerp(this.bases[i1], f);
-      const t = this.tips[i0].clone().lerp(this.tips[i1], f);
-      const age = this.ages[i0] * (1 - f) + this.ages[i1] * f;
-      const k = (1 - fi / (n - 1)) * Math.max(0, 1 - age / 0.16);
-      this.pos.set([b.x, b.y, b.z], v * 3);
-      this.pos.set([t.x, t.y, t.z], v * 3 + 3);
-      this.alpha[v] = k * 0.9;
-      this.alpha[v + 1] = k * 0.9;
-      v += 2;
+      prevSeg = seg;
     }
+    this.geo.setDrawRange(0, n);
     (this.geo.getAttribute('position') as THREE.BufferAttribute).needsUpdate = true;
     (this.geo.getAttribute('alpha') as THREE.BufferAttribute).needsUpdate = true;
-    // Drop fully faded samples.
-    while (this.ages.length && this.ages[this.ages.length - 1] > 0.2) {
-      this.ages.pop();
-      this.bases.pop();
-      this.tips.pop();
-    }
+    (this.geo.getIndex() as THREE.BufferAttribute).needsUpdate = true;
   }
 
   dispose(): void {

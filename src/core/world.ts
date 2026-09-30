@@ -98,8 +98,9 @@ export class World {
   readonly standoff: Standoff;
   /** Remaining frozen ticks (hit-stop). */
   hitstop = 0;
-  /** Fraction between the last two ticks, for render interpolation. */
+  /** Fraction between the last two ticks, for render interpolation. Held still during hit-stop. */
   alpha = 0;
+  private heldAlpha = 0;
   timeScale = 1;
   input: InputFrame = emptyInput();
   private events: CombatEvent[] = [];
@@ -244,14 +245,28 @@ export class World {
     let n = 0;
     while (this.acc >= DT && n < 8) {
       this.acc -= DT;
+      const frozen = this.hitstop > 0;
       const frame: InputFrame = { ...input, pressed: n === 0 ? this.pending.pressed : {}, released: n === 0 ? this.pending.released : {} };
       this.step(frame);
       if (n === 0) this.pending = { pressed: {}, released: {} };
       n++;
+      // Hit-stop pauses the interpolation phase: remember it when the freeze starts and
+      // resume from it when the freeze ends, so bodies don't jitter between two ticks.
+      if (!frozen && this.hitstop > 0) this.heldAlpha = Math.min(1, this.acc / DT);
+      else if (frozen && this.hitstop === 0) this.acc += this.heldAlpha * DT;
     }
     if (n === 8) this.acc = 0;
-    this.alpha = this.acc / DT;
+    this.alpha = this.hitstop > 0 ? this.heldAlpha : Math.min(1, this.acc / DT);
     return n;
+  }
+
+  /**
+   * Simulation clock for the presentation, in seconds: advances with ticks and the interpolation
+   * phase, stands still during hit-stop and pause, runs slower in slow-mo. Differences of this
+   * value are the "simulation dt" of a rendered frame.
+   */
+  get simClock(): number {
+    return (this.tick + this.alpha) * DT;
   }
 
   /** One fixed simulation tick. */
@@ -295,7 +310,13 @@ export class World {
     if (f.glint && ++f.glint.t > 36) f.glint = null;
     if (f.shieldOpen > 0) f.shieldOpen--;
     if (!f.alive) {
+      // Combat-wise dead (no hits, no AI, already counted) — but a finisher victim still plays
+      // its death timeline to the end before becoming a corpse.
       f.deadTicks++;
+      if (f.act.kind === 'finished') {
+        f.act.t++;
+        if (f.act.t >= f.act.dur) f.set('dead', Infinity);
+      }
       f.kb = scale(f.kb, 0.85);
       f.pos = add(f.pos, scale(f.kb, DT));
       return;
