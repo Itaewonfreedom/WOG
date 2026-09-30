@@ -100,7 +100,6 @@ export class World {
   hitstop = 0;
   /** Fraction between the last two ticks, for render interpolation. Held still during hit-stop. */
   alpha = 0;
-  private heldAlpha = 0;
   timeScale = 1;
   input: InputFrame = emptyInput();
   private events: CombatEvent[] = [];
@@ -250,13 +249,15 @@ export class World {
       this.step(frame);
       if (n === 0) this.pending = { pressed: {}, released: {} };
       n++;
-      // Hit-stop pauses the interpolation phase: remember it when the freeze starts and
-      // resume from it when the freeze ends, so bodies don't jitter between two ticks.
-      if (!frozen && this.hitstop > 0) this.heldAlpha = Math.min(1, this.acc / DT);
-      else if (frozen && this.hitstop === 0) this.acc += this.heldAlpha * DT;
+      // Hit-stop: the freeze starts now (the rest of this frame is spent frozen) and the display
+      // holds the tick that caused it (alpha = 1: roots and poses on the impact frame). When it
+      // ends, the next tick runs at once, so the display carries on from that held frame —
+      // no jitter, no backward pop, and the hold lasts exactly `hitstop` ticks at any frame phase.
+      if (!frozen && this.hitstop > 0) this.acc = 0;
+      else if (frozen && this.hitstop === 0) this.acc += DT;
     }
     if (n === 8) this.acc = 0;
-    this.alpha = this.hitstop > 0 ? this.heldAlpha : Math.min(1, this.acc / DT);
+    this.alpha = this.hitstop > 0 ? 1 : Math.min(1, this.acc / DT);
     return n;
   }
 

@@ -11,7 +11,7 @@ import { emptyInput } from './core/input';
 import { startEnemyAttack } from './core/ai';
 import { createEnvironment, type Environment } from './render/environment';
 import { CharacterView, setMetalEnvironment, type CharKind } from './render/character';
-import { Animator, swingTl } from './render/anim';
+import { Animator, actionTime, swingTl } from './render/anim';
 import type { Landing } from './render/feet';
 import { CameraRig } from './render/camera';
 import { Decals, makeGlintTexture, Puffs, Rings, Sparks, SwordTrail } from './render/fx';
@@ -450,7 +450,7 @@ export class Game {
       if (f.burning > 0 && simDt > 0 && Math.random() < 0.7) {
         this.embers.emit(V3(x, 0.4 + Math.random() * 1.2, z), 2, { color: Math.random() < 0.5 ? 0xff7a1a : 0xffc04a, speed: 0.6, size: 0.09, life: 0.6, gravity: -2, up: 1, jitter: 0.5 });
       }
-      this.updateTrail(v, f, simDt, alpha);
+      this.updateTrail(v, f, simDt);
       // Footsteps and dust come from actual foot landings.
       for (const l of v.anim.landings) this.onLanding(f, l);
     }
@@ -463,9 +463,9 @@ export class Game {
   }
 
   /** Trail windows come from the same timelines as the damage and the poses (core/timeline.ts). */
-  private updateTrail(v: View, f: Fighter, dt: number, alpha: number): void {
+  private updateTrail(v: View, f: Fighter, dt: number): void {
     const a = f.act;
-    let t = a.t + alpha;
+    let t = actionTime(f, this.world);
     let win: readonly [number, number] | null = null;
     let key = f.serial;
     let color = f.isPlayer ? 0xfff0d0 : 0xcfcfcf;
@@ -501,13 +501,15 @@ export class Game {
       win = [travel - 3, travel + 6];
     }
     const active = !!win && t >= win[0] && t < win[1];
+    // The issen's pass-through streak is the point of the move; other dashes split the ribbon.
+    const maxSpeed = a.kind === 'issen' ? Infinity : 45;
     v.trail.setColor(color, intensity);
     v.char.bladeWorld(_base, _tip);
-    v.trail.update(_base, _tip, active, dt, key);
+    v.trail.update(_base, _tip, active, dt, key, maxSpeed);
     if (v.trailL) {
       v.char.bladeWorld(_base, _tip, true);
       v.trailL.setColor(color, intensity);
-      v.trailL.update(_base, _tip, active, dt, key);
+      v.trailL.update(_base, _tip, active, dt, key, maxSpeed);
     }
   }
 
@@ -550,22 +552,29 @@ export class Game {
     const va = pa ? this.views.get(pa.id) : undefined;
     const vb = pb ? this.views.get(pb.id) : undefined;
     if (!pa || !pb || !va || !vb || !this.cam.inCinematic) {
+      // A subject vanished (e.g. corpses cleared): hand the camera back instead of filming air.
+      if (this.cam.inCinematic) this.cam.releaseCinematic();
       this.cineSubjects = null;
       return;
     }
     let weight = 0;
     let over = false;
+    let progress: number | null = null;
     if (cs.kind === 'finisher') {
       over = pa.serial !== cs.serial;
       const tl = cs.fk === 'slash' || cs.fk === 'thrust' || cs.fk === 'flow' ? FINISHER_TL[cs.fk] : null;
       if (tl && !over) {
-        const t = pa.act.t + w.alpha;
+        const t = actionTime(pa, w);
         weight = smooth01((t - (tl.release - 8)) / 8) * (1 - smooth01((t - tl.holdEnd) / 10));
+        progress = t / tl.dur;
       }
     } else {
       // Issen: hold on the victim until the cut has registered and it is going down.
-      over = pa.serial !== cs.serial && (pb.act.kind !== 'finished' || pb.act.t >= ISSEN_TL.victimFreeze + 12);
-      weight = pb.act.kind === 'finished' ? smooth01((pb.act.t - ISSEN_TL.victimFreeze + 6) / 6) * 0.7 : 0;
+      const vt = pb.act.kind === 'finished' ? actionTime(pb, w) : Infinity;
+      const end = ISSEN_TL.victimFreeze + 12;
+      over = pa.serial !== cs.serial && vt >= end;
+      weight = Number.isFinite(vt) ? smooth01((vt - ISSEN_TL.victimFreeze + 6) / 6) * 0.7 : 0;
+      progress = Number.isFinite(vt) ? Math.min(1, vt / end) : 1;
     }
     if (over) {
       this.cam.releaseCinematic();
@@ -573,7 +582,7 @@ export class Game {
       return;
     }
     _focus.copy(vb.char.root.position).setY(1.15 * pb.size);
-    this.cam.track(va.char.root.position, vb.char.root.position, _focus, weight);
+    this.cam.track(va.char.root.position, vb.char.root.position, _focus, weight, progress);
   }
 
   private syncProjectiles(): void {
@@ -808,7 +817,7 @@ export class Game {
         this.cam.shake(0.35);
         const a = this.at(ev.performer);
         const b = this.at(ev.victim);
-        this.cam.cinematic(a, b, 'issen', 2.5);
+        this.cam.cinematic(a, b, 'issen', 1.0, 3);
         const perf = w.get(ev.performer);
         if (perf) this.cineSubjects = { a: ev.performer, b: ev.victim, kind: 'issen', serial: perf.serial };
         this.env.gust(1);
@@ -834,8 +843,9 @@ export class Game {
         const a = this.at(ev.performer);
         const b = this.at(ev.victim);
         const dur = FINISHER_TL[ev.kind as 'slash' | 'thrust' | 'flow'].dur;
-        // Ends when the performer's finisher ends (trackCinematic); the duration is only a safety net.
-        this.cam.cinematic(a, b, ev.kind === 'flow' ? 'flow' : 'finisher', (dur / 60) * 4);
+        // The camera move follows the finisher's own timeline (trackCinematic) and the shot ends
+        // with it; the long limit is only a safety net.
+        this.cam.cinematic(a, b, ev.kind === 'flow' ? 'flow' : 'finisher', (dur / 60) * 1.15, (dur / 60) * 4);
         const perf = w.get(ev.performer);
         if (perf) this.cineSubjects = { a: ev.performer, b: ev.victim, kind: 'finisher', serial: perf.serial, fk: ev.kind };
         this.play('finisher', b, 0.9);

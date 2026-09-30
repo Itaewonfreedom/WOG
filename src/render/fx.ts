@@ -7,10 +7,9 @@ const TRAIL_CAP = 48;
 const TRAIL_LIFE = 0.1;
 /** Ribbon cross-sections, spread evenly over TRAIL_LIFE (so the ribbon is the same at any refresh rate). */
 const TRAIL_VERTS = 32;
-/** Samples closer than this replace the newest one (very high refresh rates). */
+/** Minimum simulation time between stored samples (very high refresh rates / deep slow-mo keep
+ *  moving the newest sample instead of piling up near-duplicates). */
 const TRAIL_MIN_DT = 1 / 240;
-/** A jump of the blade base larger than this between samples starts a new ribbon (teleports). */
-const TRAIL_JUMP = 1.2;
 
 const _tb = new THREE.Vector3();
 const _tt = new THREE.Vector3();
@@ -85,9 +84,11 @@ export class SwordTrail {
 
   /**
    * Call once per rendered frame. `dt` is simulation time (0 while frozen); `key` identifies the
-   * strike (e.g. the action serial) — a new key starts a new ribbon.
+   * strike (e.g. the action serial) — a new key starts a new ribbon. `maxSpeed` (m/s of
+   * simulation time) splits the ribbon where the blade base moves faster than that, e.g. during a
+   * dash, so a movement burst is never bridged; the same speed test holds at any refresh rate.
    */
-  update(base: THREE.Vector3, tip: THREE.Vector3, active: boolean, dt: number, key = 0): void {
+  update(base: THREE.Vector3, tip: THREE.Vector3, active: boolean, dt: number, key = 0, maxSpeed = 45): void {
     this.now += dt;
     if (active) {
       if (!this.wasActive || key !== this.lastKey) this.segId++;
@@ -99,8 +100,12 @@ export class SwordTrail {
         if (sameSeg) {
           const i = newest * 3;
           const jump = Math.hypot(base.x - this.sb[i], base.y - this.sb[i + 1], base.z - this.sb[i + 2]);
-          if (jump > TRAIL_JUMP) this.segId++;
-          else if (this.now - this.stime[newest] < TRAIL_MIN_DT) replace = true;
+          const since = this.now - this.stime[newest];
+          const prev = this.count > 1 ? this.idx(1) : -1;
+          if (jump > maxSpeed * Math.max(since, 1 / 240)) this.segId++;
+          // Keep samples at least TRAIL_MIN_DT apart: move the newest one while it is still too
+          // close to the one before it (never replace the only sample of a ribbon).
+          else if (prev >= 0 && this.sseg[prev] === this.segId && this.now - this.stime[prev] < TRAIL_MIN_DT) replace = true;
         }
         if (!replace) {
           this.head = this.count === 0 ? 0 : (this.head + 1) % TRAIL_CAP;

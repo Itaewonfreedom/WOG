@@ -13,7 +13,12 @@ interface Cine {
   perp: THREE.Vector3;
   style: CineStyle;
   t: number;
+  /** Nominal shot length (drives the camera move) … */
   dur: number;
+  /** … and the hard limit after which the shot ends on its own (safety net). */
+  maxDur: number;
+  /** Shot progress 0..1 supplied by the action being filmed (overrides t / dur). */
+  progress: number | null;
   side: number;
 }
 
@@ -81,15 +86,30 @@ export class CameraRig {
     this.trauma = Math.min(1, this.trauma + amount);
   }
 
-  cinematic(a: THREE.Vector3, b: THREE.Vector3, style: CineStyle, dur: number): void {
+  cinematic(a: THREE.Vector3, b: THREE.Vector3, style: CineStyle, dur: number, maxDur = dur): void {
     a = a.clone().setY(0);
     b = b.clone().setY(0);
     // Keep an ongoing shot of the same style (standoff is re-issued every frame).
     if (this.cine && this.cine.style === style && style === 'standoff') {
-      this.cine.a.copy(a);
-      this.cine.b.copy(b);
-      this.cine.t = Math.min(this.cine.t, 0.5);
-      this.cine.dur = Math.max(this.cine.dur, 1);
+      const c = this.cine;
+      c.a.copy(a);
+      c.b.copy(b);
+      c.t = Math.min(c.t, 0.5);
+      c.dur = Math.max(c.dur, 1);
+      c.maxDur = Math.max(c.maxDur, 1);
+      // A chained standoff moves on to another enemy: re-frame on the new pair (profile again),
+      // staying on the side the camera is already on.
+      _v.subVectors(b, a).setY(0);
+      if (_v.lengthSq() > 1e-4) {
+        _v.normalize();
+        if (Math.abs(_v.dot(c.axis)) < Math.cos(0.35)) {
+          c.axis.copy(_v);
+          const mid = _mid.copy(a).add(b).multiplyScalar(0.5);
+          c.perp.set(-_v.z, 0, _v.x);
+          const toCam = _p2.copy(this.cinePos).sub(mid).setY(0);
+          if (toCam.dot(c.perp) < 0) c.perp.multiplyScalar(-1);
+        }
+      }
       return;
     }
     // Choose the profile side closest to the current view so the cut isn't jarring.
@@ -100,7 +120,7 @@ export class CameraRig {
     const perp = new THREE.Vector3(-axis.z, 0, axis.x);
     const toCam = this.camera.position.clone().sub(mid).setY(0);
     const side = toCam.dot(perp) >= 0 ? 1 : -1;
-    this.cine = { a: a.clone(), b: b.clone(), axis, perp: perp.multiplyScalar(side), style, t: 0, dur, side };
+    this.cine = { a: a.clone(), b: b.clone(), axis, perp: perp.multiplyScalar(side), style, t: 0, dur, maxDur: Math.max(dur, maxDur), progress: null, side };
     this.focusW = 0;
   }
 
@@ -108,10 +128,11 @@ export class CameraRig {
    * Follow the live subjects of the current shot (called every frame while it runs). `focus` is
    * the contact point the shot should drift toward with weight `focusW` (0..1).
    */
-  track(a: THREE.Vector3, b: THREE.Vector3, focus: THREE.Vector3 | null, focusW: number): void {
+  track(a: THREE.Vector3, b: THREE.Vector3, focus: THREE.Vector3 | null, focusW: number, progress: number | null = null): void {
     if (!this.cine) return;
     this.cine.a.copy(a).setY(0);
     this.cine.b.copy(b).setY(0);
+    this.cine.progress = progress;
     if (focus) this.focus.copy(focus);
     this.focusW = focus ? focusW : 0;
   }
@@ -174,7 +195,7 @@ export class CameraRig {
       const mid = _mid.copy(c.a).add(c.b).multiplyScalar(0.5);
       const axis = c.axis;
       const perp = c.perp;
-      const u = Math.min(1, c.t / c.dur);
+      const u = Math.min(1, c.progress ?? c.t / c.dur);
       const camPos = _camPos;
       const lookAt = _lookAt;
       switch (c.style) {
@@ -206,7 +227,7 @@ export class CameraRig {
       }
       this.cinePos.lerp(camPos, approach(8, dt));
       this.cineLook.lerp(lookAt, approach(8, dt));
-      if (c.t >= c.dur) this.releaseCinematic();
+      if (c.t >= (c.progress === null ? c.dur : c.maxDur)) this.releaseCinematic();
     }
     this.cineBlend += ((this.cine ? 1 : 0) - this.cineBlend) * approach(this.cine ? 14 : 4, dt);
     if (this.cineBlend < 0.001) this.cineBlend = 0;

@@ -281,11 +281,12 @@ describe('타이밍 통일', () => {
       const sim = new Sim(w);
       sim.frame();
       w.player.set('attack', m.startup + m.active + m.recovery, { move: m, lunge: 0 });
-      // Evaluate exactly on the contact tick (alpha 0) and just after it.
+      // The frame that shows the contact tick (what hit-stop holds: alpha = 1).
       const anim = sim.view(w.player).anim;
       w.player.act.t = m.startup;
       const root = new THREE.Vector3();
-      const pose = anim.update(w.player, w, 0, 1 / 60, root, 0);
+      anim.update(w.player, w, 1, 1 / 60, root, 0);
+      const pose = anim.rawPose;
       const dStrike = pose.handR.distanceTo(strike.handR);
       const dWind = pose.handR.distanceTo(wind.handR);
       expect(dStrike, id).toBeLessThan(0.02);
@@ -320,9 +321,10 @@ describe('발 접지', () => {
         planted[s] = isPlanted;
         prev[s].copy(now);
       }
-      // Leg never has to be clamped: the pelvis is lowered to fit the planted feet.
+      // A planted leg never has to be clamped: the pelvis is lowered to fit the planted feet.
       const pose = v.anim.pose;
-      for (const [foot, side] of [[pose.footL, 1], [pose.footR, -1]] as const) {
+      for (const [foot, side, i] of [[pose.footL, 1, 0], [pose.footR, -1, 1]] as const) {
+        if (!v.anim.planter.isPlanted(i)) continue;
         const hip = new THREE.Vector3(pose.pelvis.x + side * 0.1, pose.pelvis.y - 0.02, pose.pelvis.z);
         const ank = foot.clone().setY(foot.y + 0.07);
         maxAnkleStretch = Math.max(maxAnkleStretch, hip.distanceTo(ank));
@@ -493,9 +495,11 @@ describe('공격자·피해자 연출', () => {
           const seg = new THREE.Line3(base, tip);
           const q = new THREE.Vector3();
           seg.closestPointToPoint(chest, true, q);
-          best = Math.min(best, Math.hypot(q.x - chest.x, q.z - chest.z));
+          // Horizontal gap to the torso axis, and the height must be on the torso too.
+          const gap = Math.hypot(q.x - chest.x, q.z - chest.z) + Math.max(0, Math.abs(q.y - chest.y) - 0.3 * e.size);
+          best = Math.min(best, gap);
         });
-        // Within the torso radius (≈0.15–0.2 m): the blade is in the body, not in the air.
+        // Within the torso radius (≈0.15–0.2 m) at torso height: the blade is in the body.
         expect(best, `${arch}/${kind}`).toBeLessThan(0.2 * e.size);
       }
     }
@@ -607,6 +611,86 @@ describe('트레일 · 프레임 독립', () => {
     expect(b.maxSamples).toBe(a.maxSamples);
   });
 
+  it('새 공격(키 변경)은 제자리에서 이어져도 이전 리본과 잇지 않는다', () => {
+    const tr = new SwordTrail(0xffffff);
+    const base = new THREE.Vector3(0, 1, 0);
+    const tip = new THREE.Vector3(0, 1, 1);
+    tr.update(base, tip, true, 1 / 60, 1);
+    tr.update(base.set(0.02, 1, 0), tip.set(0.3, 1, 0.95), true, 1 / 60, 1);
+    // Next strike, same place, other key: only its own (single-sample) ribbon — no quad yet.
+    tr.update(base.set(0.03, 1, 0), tip.set(-0.3, 1.2, 0.9), true, 1 / 60, 2);
+    const pos = (tr.mesh.geometry.getAttribute('position') as THREE.BufferAttribute).array as Float32Array;
+    const idx = (tr.mesh.geometry.getIndex() as THREE.BufferAttribute).array as Uint16Array;
+    // Any drawn quad may only join cross-sections of the first strike (tips with x >= 0).
+    for (let i = 0; i < tr.drawnIndices; i++) expect(pos[idx[i] * 3], `vertex ${idx[i]}`).toBeGreaterThan(-0.01);
+  });
+
+  it('슬로모·고주사율(240Hz)에서도 트레일이 그려지고 모양이 같다', () => {
+    const run = (hz: number, ts: number) => {
+      const tr = new SwordTrail(0xffffff);
+      const base = new THREE.Vector3();
+      const tip = new THREE.Vector3();
+      const simLen = 0.2;
+      const n = Math.round((simLen / ts) * hz);
+      let drawnFrames = 0;
+      for (let i = 0; i <= n; i++) {
+        const t = (i / hz) * ts;
+        const a = t * 12;
+        base.set(Math.sin(a) * 0.3, 1.2, Math.cos(a) * 0.3);
+        tip.set(Math.sin(a), 1.2, Math.cos(a));
+        tr.update(base, tip, true, i === 0 ? 0 : ts / hz, 1);
+        if (tr.drawnIndices > 0) drawnFrames++;
+      }
+      const pos = Array.from((tr.mesh.geometry.getAttribute('position') as THREE.BufferAttribute).array as Float32Array);
+      const alpha = Array.from((tr.mesh.geometry.getAttribute('alpha') as THREE.BufferAttribute).array as Float32Array);
+      return { drawnFrames, n, pos, alpha };
+    };
+    const ref = run(60, 1);
+    for (const [hz, ts] of [[60, 0.18], [60, 0.22], [120, 0.3], [240, 1], [360, 1]]) {
+      const r = run(hz, ts);
+      expect(r.drawnFrames / r.n, `${hz}Hz x${ts}`).toBeGreaterThan(0.8);
+      let maxD = 0;
+      for (let v = 0; v < r.alpha.length; v++) {
+        if (r.alpha[v] <= 0 || ref.alpha[v] <= 0) continue;
+        maxD = Math.max(maxD, Math.hypot(r.pos[v * 3] - ref.pos[v * 3], r.pos[v * 3 + 1] - ref.pos[v * 3 + 1], r.pos[v * 3 + 2] - ref.pos[v * 3 + 2]));
+      }
+      // Samples are ≥ 1/240 s apart, so the (arc-interpolated) ribbon differs by at most a few cm.
+      expect(maxD, `${hz}Hz x${ts}`).toBeLessThan(0.03);
+    }
+  });
+
+  it('돌진(고속 이동) 구간의 리본 분리가 주사율과 무관하다', () => {
+    const run = (hz: number) => {
+      const tr = new SwordTrail(0xffffff);
+      const base = new THREE.Vector3();
+      const tip = new THREE.Vector3();
+      const n = Math.round(0.15 * hz);
+      let bridged = 0;
+      for (let i = 0; i <= n; i++) {
+        const t = i / hz;
+        // 0–0.05 s: 55 m/s dash; then a normal cut in place.
+        const x = Math.min(t, 0.05) * 55;
+        const a = Math.max(0, t - 0.05) * 14;
+        base.set(x, 1.2, 0);
+        tip.set(x + Math.sin(a) * 0.7, 1.2, Math.cos(a) * 0.7);
+        tr.update(base, tip, true, i === 0 ? 0 : 1 / hz, 1);
+        // A quad spanning more than 1 m of base travel is a bridge across the dash.
+        const pos = (tr.mesh.geometry.getAttribute('position') as THREE.BufferAttribute).array as Float32Array;
+        const idx = (tr.mesh.geometry.getIndex() as THREE.BufferAttribute).array as Uint16Array;
+        for (let k = 0; k < tr.drawnIndices; k += 3) {
+          const xs = [idx[k], idx[k + 1], idx[k + 2]].map((v) => pos[v * 3]);
+          if (Math.max(...xs) - Math.min(...xs) > 1) bridged++;
+        }
+      }
+      return { bridged, drawn: tr.drawnIndices };
+    };
+    for (const hz of [30, 60, 120]) {
+      const r = run(hz);
+      expect(r.bridged, `${hz}Hz`).toBe(0);
+      expect(r.drawn, `${hz}Hz`).toBeGreaterThan(0);
+    }
+  });
+
   it('새 공격(키 변경)이나 순간이동 사이를 리본으로 잇지 않는다', () => {
     const tr = new SwordTrail(0xffffff);
     const base = new THREE.Vector3(0, 1, 0);
@@ -664,6 +748,47 @@ describe('트레일 · 프레임 독립', () => {
     expect(checked).toBe(true);
   });
 
+  it('히트스톱 길이는 프레임 위상과 무관하게 정확히 k틱이고, 풀릴 때 포즈가 튀지 않는다', () => {
+    const holds: number[] = [];
+    for (const phase of [0.05, 0.3, 0.6, 0.9]) {
+      const { w, e } = duelWorld('dummy', 2.0);
+      e.hp = 9999;
+      e.maxHp = 9999;
+      e.maxPosture = 9999;
+      const sim = new Sim(w, 600);
+      w.update(phase / 60, emptyInput());
+      sim.run(20);
+      sim.tap('slash');
+      let frozen = 0;
+      let k = 0;
+      let lastT = -1;
+      let maxPoseStep = 0;
+      let lastClock = w.simClock;
+      for (let i = 0; i < 600; i++) {
+        sim.frame();
+        const f = w.player;
+        if (w.hitstop > 0) {
+          frozen++;
+          k = Math.max(k, w.hitstop);
+        }
+        if (f.act.kind === 'attack') {
+          const t = f.act.t - 1 + w.alpha;
+          const dClock = (w.simClock - lastClock) * 60;
+          if (lastT >= 0) maxPoseStep = Math.max(maxPoseStep, t - lastT - dClock);
+          lastT = t;
+        }
+        lastClock = w.simClock;
+        if (frozen > 0 && w.hitstop === 0 && f.act.kind !== 'attack') break;
+      }
+      holds.push(frozen / 10); // frames of 1/600 s → ticks of 1/60 s
+      // Pose time never runs ahead of the presentation clock (no jump when the freeze ends).
+      expect(maxPoseStep, `phase ${phase}`).toBeLessThan(1e-6);
+      void k;
+    }
+    // Same hold at every phase (within one 1/600 s frame).
+    expect(Math.max(...holds) - Math.min(...holds)).toBeLessThanOrEqual(0.1 + 1e-9);
+  });
+
   it('히트스톱 중 위치 보간(alpha)이 흔들리지 않는다', () => {
     const { w, e } = duelWorld('dummy', 2.0);
     e.hp = 9999;
@@ -695,7 +820,8 @@ describe('트레일 · 프레임 독립', () => {
       sim.run(Math.round(0.1 * hz));
       sim.tap('slash');
       const out: Record<number, number[]> = {};
-      sim.run(Math.round(0.5 * hz), (f, _v, pose) => {
+      sim.run(Math.round(0.5 * hz), (f, v) => {
+        const pose = v.anim.rawPose;
         if (!f.isPlayer || f.act.kind !== 'attack') return;
         const t = f.act.t + w.alpha;
         if (Math.abs(t - Math.round(t)) < 1e-6) out[Math.round(t)] = [pose.handR.x, pose.handR.y, pose.handR.z];
@@ -731,6 +857,7 @@ describe('피니쉬 카메라', () => {
     const last = new THREE.Vector3();
     let lastFov = 0;
     const mid0 = new THREE.Vector3();
+    let lookErrAtDash = Infinity;
     for (let i = 0; i < 240; i++) {
       // The performer dashes in during the shot.
       if (i < 60) player.z = Math.min(1.6, player.z + 0.05);
@@ -744,10 +871,19 @@ describe('피니쉬 카메라', () => {
         maxFov = Math.max(maxFov, Math.abs(cam.camera.fov - lastFov));
       }
       if (i === 20) mid0.copy(p);
+      if (i === 70) {
+        // Angle between the view direction and the direction to the pair's midpoint.
+        const dir = new THREE.Vector3();
+        cam.camera.getWorldDirection(dir);
+        const mid = player.clone().add(victim).multiplyScalar(0.5).setY(1.1);
+        lookErrAtDash = dir.angleTo(mid.sub(p).normalize());
+      }
       last.copy(p);
       lastFov = cam.camera.fov;
     }
     expect(cam.inCinematic).toBe(false);
+    // While the performer dashed in, the shot kept the pair centred (it follows live subjects).
+    expect(lookErrAtDash).toBeLessThan(0.3);
     // Smooth: no cut on release (< 12 cm and < 1.5° per 60 Hz frame).
     expect(maxMove).toBeLessThan(0.12);
     expect(maxFov).toBeLessThan(1.5);
@@ -769,8 +905,9 @@ describe('리뷰 회귀', () => {
     sim.run(2);
     sim.tap(getMove(id).type === 'thrust' ? 'thrust' : 'slash');
     const out: THREE.Vector3[] = [];
-    sim.run(Math.round(hz * 0.6), (f, _v, pose) => {
-      if (f.isPlayer && w.hitstop > 0 && f.act.kind === 'attack') out.push(pose.handR.clone());
+    sim.run(Math.round(hz * 0.6), (f, v) => {
+      // The timeline pose (before the feet lower the body to fit the stance).
+      if (f.isPlayer && w.hitstop > 0 && f.act.kind === 'attack') out.push(v.anim.rawPose.handR.clone());
     });
     return out;
   }
@@ -795,9 +932,9 @@ describe('리뷰 회귀', () => {
     doIssen(w, w.player, e, false);
     const strike = stanceKeyPose('player', { hand: [-0.1, 1.1, 0.5], blade: [0.2, -0.1, 1], edge: [0, 1, 0], torso: 0.1, lean: 0.35, pelvisY: 0.8, step: 0.45 });
     let n = 0;
-    sim.run(20, (f, _v, pose) => {
+    sim.run(20, (f, v) => {
       if (f.isPlayer && w.hitstop > 0) {
-        expect(pose.handR.distanceTo(strike.handR)).toBeLessThan(0.02);
+        expect(v.anim.rawPose.handR.distanceTo(strike.handR)).toBeLessThan(0.02);
         n++;
       }
     });
@@ -882,12 +1019,57 @@ describe('리뷰 회귀', () => {
         const t = i / 100;
         f.act.t = Math.floor(t);
         w.alpha = t - Math.floor(t);
-        const pose = anim.update(f, w, w.alpha, 0.01 / 60, root, 0);
+        anim.update(f, w, w.alpha, 0.01 / 60, root, 0);
+        const pose = anim.rawPose;
         if (last) maxStep = Math.max(maxStep, pose.handR.distanceTo(last));
         last = pose.handR.clone();
       }
       expect(maxStep, id).toBeLessThan(0.015);
     }
+  });
+});
+
+describe('시네마틱 · 재타격', () => {
+  it('연쇄 대치에서 다음 적으로 넘어가면 측면 구도로 다시 잡는다 (한 명이 다른 명을 가리지 않음)', () => {
+    const cam = new CameraRig(16 / 9);
+    const player = new THREE.Vector3(0, 0, 0);
+    const opts = { aiming: false, lockTarget: null, crowd: 0, moveDir: null, slowmo: false };
+    const view = (leader: THREE.Vector3) => {
+      for (let i = 0; i < 90; i++) {
+        cam.cinematic(player, leader, 'standoff', 0.2);
+        cam.update(1 / 60, player, opts);
+      }
+      const dir = new THREE.Vector3();
+      cam.camera.getWorldDirection(dir);
+      const line = leader.clone().sub(player).normalize();
+      return Math.abs(dir.setY(0).normalize().dot(line));
+    };
+    expect(view(new THREE.Vector3(0, 0, 6))).toBeLessThan(0.35);
+    // The next enemy stands at 90° to the first: the shot must turn to profile it too.
+    expect(view(new THREE.Vector3(6, 0, 0))).toBeLessThan(0.35);
+  });
+
+  it('일섬으로 쓰러지는 중인 적에게 바로 앞에서 공격해도 맞지 않고 처치도 늘지 않는다', () => {
+    const { w, d, p, e } = duel('ronin', 2.0);
+    doIssen(w, p, e, false);
+    // Wait for the performer's pass-through to end while the victim is still 'finished'.
+    while (p.act.kind === 'issen') d.tick();
+    expect(e.act.kind).toBe('finished');
+    // Stand right in front of the dying victim, facing it, and attack with everything.
+    p.pos = { x: e.pos.x, z: e.pos.z - 1.3 };
+    p.prevPos = { ...p.pos };
+    p.yaw = 0;
+    const hitsBefore = d.events.filter((ev) => ev.type === 'hit' && ev.target === e.id).length;
+    let active = 0;
+    for (let i = 0; i < 24 && e.act.kind === 'finished'; i++) {
+      if (i % 8 === 0) d.tap(i % 16 === 0 ? 'slash' : 'thrust');
+      else d.tick();
+      if (p.act.kind === 'attack' && p.act.move && p.act.t >= p.act.move.startup && p.act.t < p.act.move.startup + p.act.move.active) active++;
+    }
+    expect(active).toBeGreaterThan(0); // the attacks really reached their active frames
+    expect(d.events.filter((ev) => ev.type === 'hit' && ev.target === e.id).length).toBe(hitsBefore);
+    expect(w.stats.kills).toBe(1);
+    expect(d.count('kill')).toBe(1);
   });
 });
 

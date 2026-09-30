@@ -406,7 +406,7 @@ export function swingTl(m: MoveDef): SwingTimeline {
 
 /** Presentation time of `f`'s current action (ticks): what poses, trails and camera focus use. */
 export function actionTime(f: Fighter, w: World): number {
-  return f.act.t + (w.hitstop > 0 ? 0 : w.alpha);
+  return Math.max(0, f.act.t - 1 + w.alpha);
 }
 
 const SPIN_START = (m: MoveDef) => m.startup - 3;
@@ -509,6 +509,11 @@ export class Animator {
     this.hitSerial = f.serial;
   }
 
+  /** The animation pose before foot planting (what the action timeline produced). */
+  get rawPose(): Pose {
+    return this.animPose;
+  }
+
   /** Landings (footstep / dust events) produced by the last update. */
   get landings() {
     return this.planter.landings;
@@ -516,12 +521,14 @@ export class Animator {
 
   update(f: Fighter, w: World, alpha: number, dtSim: number, root: THREE.Vector3, yaw: number): Pose {
     const a = f.act;
-    // Poses run on the action clock. During hit-stop they sit exactly on the tick that caused it
-    // (the contact key), whatever the interpolation phase of the frame was.
-    const t = a.t + (w.hitstop > 0 ? 0 : alpha);
+    // Poses run on the same clock as the interpolated roots (the frame shows tick − 1 + alpha).
+    // During hit-stop the world holds alpha = 1, i.e. exactly the tick that caused it: the
+    // contact key, whatever the refresh rate or frame phase.
+    const t = Math.max(0, a.t - 1 + alpha);
     if (f.serial !== this.serial || a.kind !== this.kind) this.onActionStart(f);
     if (a.kind === 'gale') {
-      const seg = Math.floor((a.t - 1) / GALE_TL.seg);
+      // Same clock as the pose: a new dash-cut segment starts from where the last one ended.
+      const seg = Math.floor(Math.max(0, t - 1) / GALE_TL.seg);
       if (seg !== this.galeSeg) {
         this.galeSeg = seg;
         this.snapshot(this.entry);
@@ -562,7 +569,7 @@ export class Animator {
     this.pose.footYawL += this.pose.pelvisYaw * 0.8;
     this.pose.footYawR += this.pose.pelvisYaw * 0.8;
     _vel.set(vx, 0, vz);
-    const mode = this.feetMode(f, this.pose);
+    const mode = this.feetMode(f, this.pose, t);
     this.planter.update(this.pose, root, yaw + this.pose.bodyYaw, f.size, _vel, dtSim, mode, this.stepParams(f, t, speed, lx, lz), 1);
     return this.pose;
   }
@@ -1180,23 +1187,23 @@ export class Animator {
     }
   }
 
-  private feetMode(f: Fighter, p: Pose): FeetMode {
+  private feetMode(f: Fighter, p: Pose, t: number): FeetMode {
     // Whole-body rotations are compared wrapped: the end of a 360° roll is upright again.
     if (Math.abs(wrapAngle(p.bodyPitch)) > 0.3 || Math.abs(wrapAngle(p.bodyRoll)) > 0.3) return 'air';
     if (p.pelvis.y > this.stance.pelvis.y + 0.08) return 'air';
     const a = f.act;
     if (a.kind === 'attack' && a.move?.id === 'r_s4') {
-      const t = a.t;
       if (t >= SPIN_START(a.move) - 1 && t <= SPIN_START(a.move) + SPIN_LEN(a.move)) return 'pivot';
     }
     // Pass-through dashes cover metres in a few ticks: the feet trail the body, then plant.
-    if ((a.kind === 'issen' && a.t <= ISSEN_TL.travel + 1) || (a.kind === 'gale' && galeLocal(a.t) < GALE_TL.contact + 2)) return 'air';
+    if ((a.kind === 'issen' && t <= ISSEN_TL.travel + 2) || (a.kind === 'gale' && galeLocal(t) < GALE_TL.contact + 2)) return 'air';
     return 'ground';
   }
 
   private stepParams(f: Fighter, t: number, speed: number, lx: number, lz: number): StepParams {
     const a = f.act;
     const P = this.params;
+    P.stride = 0;
     switch (a.kind) {
       case 'attack': {
         const tl = a.move ? swingTl(a.move) : null;
@@ -1262,11 +1269,14 @@ export class Animator {
         P.allowBoth = false;
         P.lead = lx > 0.5 ? 0 : lx < -0.5 ? 1 : lz < -0.2 ? 1 : 0;
         P.weight = Math.min(1, 0.3 + speed * 0.08);
+        // Full left+right cycle length: longer strides as speed rises, but the stance travel
+        // (stride − speed × swing) stays within what the legs reach (≈ ±0.45 m of the hip).
+        P.stride = Math.min(1.4, 0.8 + speed * 0.12);
         return P;
       }
     }
   }
-  private readonly params: StepParams = { threshold: 0.2, swingDur: 0.2, lift: 0.05, allowBoth: false, lead: 0, weight: 0.4 };
+  private readonly params: StepParams = { threshold: 0.2, swingDur: 0.2, lift: 0.05, allowBoth: false, lead: 0, weight: 0.4, stride: 0 };
 }
 
 /**

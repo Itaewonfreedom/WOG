@@ -78,6 +78,8 @@ class Limb {
 
 const Z = new THREE.Vector3(0, 0, 1);
 const ARM = 0.58;
+/** Fastest an elbow / knee bend plane may turn (rad/s). */
+const BEND_MAX_RATE = 40;
 const LEG = 0.875;
 const ANKLE = 0.07;
 const V = () => new THREE.Vector3();
@@ -114,6 +116,7 @@ class Bend {
   private init = false;
   private static readonly t = new THREE.Vector3();
   private static readonly u = new THREE.Vector3();
+  private static readonly w = new THREE.Vector3();
 
   solve(root: THREE.Vector3, target: THREE.Vector3, l1: number, l2: number, pole: THREE.Vector3, dt: number, out: THREE.Vector3): THREE.Vector3 {
     const ax = Bend.t.subVectors(target, root);
@@ -128,10 +131,17 @@ class Bend {
       if (wl < 1e-4) want.set(0, 0, 1).addScaledVector(ax, -ax.z);
       this.dir.copy(want).normalize();
       this.init = true;
-    } else if (wl > 0.15 * pl) {
+    } else if (wl > 0.15 * pl && dt > 0) {
       want.multiplyScalar(1 / wl);
-      // Follow quickly, but never snap across in one frame.
-      this.dir.lerp(want, dt > 0 ? 1 - Math.exp(-dt * 30) : 0);
+      // Turn toward the wanted bend plane about the limb axis: fast, but rate-limited so even a
+      // reversed pole swings the joint across over several frames at any refresh rate.
+      const ang = Math.acos(Math.max(-1, Math.min(1, this.dir.dot(want))));
+      if (ang > 1e-5) {
+        const step = Math.min(ang * (1 - Math.exp(-dt * 30)), BEND_MAX_RATE * dt);
+        const axis = Bend.w.crossVectors(this.dir, want);
+        if (axis.lengthSq() < 1e-10) axis.copy(ax);
+        this.dir.applyAxisAngle(axis.normalize(), step);
+      }
     }
     // Keep the bend perpendicular to the current limb axis.
     this.dir.addScaledVector(ax, -this.dir.dot(ax));
