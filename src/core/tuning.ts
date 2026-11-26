@@ -10,26 +10,26 @@ export const T = {
 
   // ── Buckler: 막기 / 튕기기 (Hajiki) ───────────────────────────────
   /** Guard pressed within this many ticks before impact = 튕기기 (perfect deflect). */
-  deflectWindow: 8,
+  deflectWindow: 12,
   /** Re-pressing guard too soon shrinks the window (anti-mash). */
-  deflectSpamGap: 22,
-  deflectSpamWindow: 3,
+  deflectSpamGap: 16,
+  deflectSpamWindow: 6,
   /** Buckler only covers the front: half-angle in radians (~70°). */
   guardArc: (70 * Math.PI) / 180,
   /** Deflected attacker is stunned this long (weapon knocked away). */
   deflectRecoil: 42,
   deflectPostureDmg: 26,
   /** After a deflect, attack within this many ticks = 튕기기 일섬 (instant counter-kill). */
-  hajikiIssenWindow: 14,
+  hajikiIssenWindow: 20,
   /** After a deflect, the riposte (any attack) gets bonus posture until this tick. */
   riposteWindow: 40,
   playerMaxPosture: 100,
-  blockPostureMul: 1.1,
+  blockPostureMul: 0.9,
   guardBreakStun: 55,
 
   // ── 흘리기 (Nagashi) ─────────────────────────────────────────────
   /** Guard + dodge pressed within this many ticks before impact = 흘리기. Works on red attacks too. */
-  flowWindow: 11,
+  flowWindow: 14,
   /** Missed flow input turns into a guarded side-step this long. */
   flowStepDur: 22,
   flowAnimDur: 26,
@@ -39,10 +39,10 @@ export const T = {
 
   // ── 일섬 (Issen) ──────────────────────────────────────────────────
   /** Attack started this many ticks (or fewer) before the enemy blow lands = 일섬. */
-  issenWindow: 5,
+  issenWindow: 7,
   /** Chain issen: window after an issen during which the next issen is easier / chains. */
   issenChainTime: 110,
-  issenChainWindow: 8,
+  issenChainWindow: 10,
   /** A deliberate press is required: no other attack press within this many ticks before. */
   issenMashLockout: 18,
   issenDur: 34,
@@ -54,7 +54,7 @@ export const T = {
   dodgeIFrames: [2, 11] as const,
   dodgeDist: 2.6,
   dodgeCancelFrom: 12,
-  perfectDodgeFrames: 6,
+  perfectDodgeFrames: 8,
   rollDur: 30,
   rollDist: 4.4,
   rollIFrames: [2, 18] as const,
@@ -135,6 +135,11 @@ export const T = {
   maxAttackers: 2,
   maxShooters: 1,
   glintLead: 20,
+  /** 박자 규칙: two enemies' blows never land closer together than this (ticks). */
+  attackSpacing: 26,
+  /** 타이밍 링: every enemy melee attack shows a ring that closes at this constant pace and
+   *  touches its target circle on the contact tick (ticks from fully open to contact). */
+  telegraphLead: 36,
 
   // ── Standoff (대치) ───────────────────────────────────────────────
   standoffStrikeWindow: 14,

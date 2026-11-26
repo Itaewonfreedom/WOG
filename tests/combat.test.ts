@@ -112,13 +112,25 @@ describe('튕기기 (Hajiki)', () => {
 
   it('방패 연타(스팸)는 튕기기 판정이 좁아진다', () => {
     const { w, d, e } = duel('ronin', 2.2);
-    d.tap('guard');
-    d.tick(3);
     const s = enemyAttack(w, e, 'ro_cut2');
-    d.tick(s - 6);
-    d.press('guard'); // second press within the spam gap: tiny window, too early
-    d.tick(8);
+    // Second press inside the normal window but outside the (smaller) spam window.
+    const early = T.deflectSpamWindow + 3;
+    expect(early).toBeLessThan(T.deflectWindow);
+    d.tick(s - early - 8);
+    d.tap('guard'); // 2 ticks
+    d.tick(5);
+    d.press('guard'); // within the spam gap of the first press
+    d.tick(early + 2);
     expect(d.has('deflect')).toBe(false);
+  });
+
+  it('침착한 한 번의 방패는 타격 12틱 전에 눌러도 튕긴다 (넉넉한 판정)', () => {
+    const { w, d, e } = duel('ronin', 2.2);
+    const s = enemyAttack(w, e, 'ro_cut1');
+    d.tick(s - T.deflectWindow);
+    d.press('guard');
+    d.tick(T.deflectWindow + 1);
+    expect(d.has('deflect')).toBe(true);
   });
 });
 

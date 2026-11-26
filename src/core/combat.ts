@@ -160,6 +160,10 @@ export function stepAttack(w: World, f: Fighter): void {
     w.emit({ type: 'glint', id: f.id, color: m.unblockable, move: m });
   }
   if (m.feint) return;
+  // 타이밍 링 cue: the answer window opens now (buckler for white / blue, flow or dodge for red).
+  if (!f.isPlayer && !m.projectile && a.t === Math.max(1, m.startup - w.win(m.unblockable === 'red' ? T.flowWindow : T.deflectWindow))) {
+    w.emit({ type: 'cue', id: f.id, grade: m.unblockable === 'red' ? 'red' : m.unblockable === 'blue' ? 'blue' : 'white' });
+  }
   // The whoosh starts as the blade is released toward the target (see timeline.ts), the hit
   // itself lands on the first active tick.
   if (!m.projectile && a.t === Math.max(1, m.startup - releaseTicks(m))) w.emit({ type: 'swing', id: f.id, move: m });

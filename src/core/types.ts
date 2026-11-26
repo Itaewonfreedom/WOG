@@ -247,6 +247,8 @@ export type CombatEvent =
   | { type: 'finisherImpact'; performer: number; victim: number; kind: FinisherKind; pos: Vec2 }
   | { type: 'kill'; victim: number; killer: number; cause: string }
   | { type: 'glint'; id: number; color: 'blue' | 'red'; move: MoveDef }
+  /** The answer window of an enemy blow just opened (the timing ring entered its band). */
+  | { type: 'cue'; id: number; grade: 'white' | 'blue' | 'red' }
   | { type: 'arrowFire'; id: number; owner: number; arrowType: ArrowType; perfect: boolean }
   | { type: 'arrowHit'; target: number; pos: { x: number; y: number; z: number }; headshot: boolean; dmg: number; lethal: boolean; blocked: boolean }
   | { type: 'arrowMiss'; pos: { x: number; y: number; z: number } }

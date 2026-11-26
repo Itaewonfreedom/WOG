@@ -47,6 +47,30 @@ export function canCommit(w: World, e: Fighter): boolean {
   return true;
 }
 
+/**
+ * 박자 규칙: two enemies never land their blows at (nearly) the same moment. Would `m`, started
+ * now by `e`, make contact within `attackSpacing` ticks of another enemy's pending blow?
+ */
+export function contactClear(w: World, e: Fighter, m: MoveDef): boolean {
+  if (m.feint || m.projectile) return true;
+  for (const f of w.fighters) {
+    if (f === e || f.team !== 'enemy' || !f.alive || f.act.kind !== 'attack') continue;
+    const o = f.act.move;
+    if (!o || o.feint || o.projectile) continue;
+    const left = o.startup - f.act.t;
+    if (left <= 0) continue; // already landing / recovering
+    if (Math.abs(m.startup - left) < T.attackSpacing) return false;
+  }
+  return true;
+}
+
+/** Start `m` unless it would break the spacing rule. */
+function tryAttack(w: World, e: Fighter, m: MoveDef): boolean {
+  if (!contactClear(w, e, m)) return false;
+  startEnemyAttack(w, e, m);
+  return true;
+}
+
 export function updateAI(w: World): void {
   const p = w.player;
   const enemies = w.fighters.filter((f) => f.team === 'enemy' && f.targetable && f.brain);
@@ -112,8 +136,8 @@ function think(w: World, e: Fighter): void {
       const followAt = m.startup + m.active + Math.floor(m.recovery * 0.35);
       if (a.t !== followAt) return;
       if (m.next?.slash) {
-        if (p.targetable && gap < getMove(m.next.slash).shape.range + 0.8 && w.rng.chance(arch.ai.comboChance) && !playerCinematic(w)) {
-          startEnemyAttack(w, e, getMove(m.next.slash));
+        if (p.targetable && gap < getMove(m.next.slash).shape.range + 0.8 && w.rng.chance(arch.ai.comboChance) && !playerCinematic(w) && tryAttack(w, e, getMove(m.next.slash))) {
+          // string continues
         } else {
           b.token = false;
           b.cooldown = Math.round(w.rng.range(arch.ai.cooldown[0], arch.ai.cooldown[1]) * (1.4 - arch.ai.aggression));
@@ -121,7 +145,7 @@ function think(w: World, e: Fighter): void {
       } else if (m.feint && b.token && gap < 3 && !playerCinematic(w)) {
         // Feint → real attack.
         const real = pickMove(w, e, gap, true);
-        if (real) startEnemyAttack(w, e, real);
+        if (real) tryAttack(w, e, real);
       }
       return;
     }
@@ -133,7 +157,7 @@ function think(w: World, e: Fighter): void {
       else if (b.counter && (p.is('recoil') || p.attackPhase === 'recovery') && gap < 2.8 && canCommit(w, e)) {
         b.counter = false;
         const m = pickMove(w, e, gap, false);
-        if (m) startEnemyAttack(w, e, m);
+        if (m) tryAttack(w, e, m);
       }
       return;
     case 'fear': {
@@ -186,7 +210,7 @@ function think(w: World, e: Fighter): void {
     if (b.counter) {
       b.counter = false;
       const m = pickMove(w, e, gap, false);
-      if (m && gap <= m.shape.range + 0.2) return startEnemyAttack(w, e, m);
+      if (m && gap <= m.shape.range + 0.2 && tryAttack(w, e, m)) return;
     }
     if (!b.plan) {
       const m = pickMove(w, e, gap, false, true);
@@ -202,8 +226,9 @@ function think(w: World, e: Fighter): void {
       const reach = plan.shape.kind === 'line' ? plan.shape.range : plan.shape.range;
       const want = Math.max(0.3, reach * 0.8 + (plan.lunge > 2 ? plan.lunge * 0.6 : 0));
       if (gap <= want) {
-        b.plan = null;
-        return startEnemyAttack(w, e, plan);
+        // In reach: strike — unless an ally's blow is about to land (wait a beat, stay put).
+        if (tryAttack(w, e, plan)) b.plan = null;
+        return;
       }
       e.vel = scale(norm(sub(p.pos, e.pos)), speed);
       return;
@@ -252,7 +277,7 @@ function breakOut(w: World, e: Fighter, gap: number): void {
       return;
     }
     case 'bash':
-      if (gap < 4.5 && canCommit(w, e)) startEnemyAttack(w, e, getMove('sh_charge'));
+      if (gap < 4.5 && contactClear(w, e, getMove('sh_charge')) && canCommit(w, e)) startEnemyAttack(w, e, getMove('sh_charge'));
       return;
     default:
       return;
@@ -264,7 +289,7 @@ function rangedThink(w: World, e: Fighter, gap: number, speed: number): void {
   const p = w.player;
   const arch = e.arch!;
   const toP = norm(sub(p.pos, e.pos));
-  if (gap < 2.0 && b.cooldown <= 0 && !playerCinematic(w)) {
+  if (gap < 2.0 && b.cooldown <= 0 && !playerCinematic(w) && contactClear(w, e, getMove('ac_knife'))) {
     b.cooldown = Math.round(w.rng.range(arch.ai.cooldown[0], arch.ai.cooldown[1]));
     return startEnemyAttack(w, e, getMove('ac_knife'));
   }
