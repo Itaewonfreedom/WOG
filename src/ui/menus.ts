@@ -91,7 +91,7 @@ export class Menus {
         <label>난이도 (판정 시간)</label><select data-s="difficulty"><option value="easy">쉬움 — 더 넓은 띠</option><option value="normal">보통</option><option value="hard">어려움 — 칼날 위의 타이밍</option></select>
         <label>흑백 영화 모드</label><input type="checkbox" data-s="kurosawa">
         <label>피 효과</label><input type="checkbox" data-s="blood">
-        <label>그래픽 품질</label><select data-s="quality"><option value="high">높음</option><option value="low">낮음</option></select>
+        <label>도트 크기</label><select data-s="quality"><option value="high">고운 도트 (세로 약 270줄)</option><option value="low">굵은 도트 (세로 약 216줄 · 가벼움)</option></select>
         <label>카메라 감도</label><input type="range" min="0.3" max="2.5" step="0.1" data-s="sensitivity">
         <label>음량</label><input type="range" min="0" max="1" step="0.05" data-s="volume">
       </div>

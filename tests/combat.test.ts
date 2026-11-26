@@ -113,15 +113,54 @@ describe('튕기기 (Hajiki)', () => {
   it('방패 연타(스팸)는 튕기기 판정이 좁아진다', () => {
     const { w, d, e } = duel('ronin', 2.2);
     const s = enemyAttack(w, e, 'ro_cut2');
-    // Second press inside the normal window but outside the (smaller) spam window.
-    const early = T.deflectSpamWindow + 3;
-    expect(early).toBeLessThan(T.deflectWindow);
-    d.tick(s - early - 8);
+    // Three presses in quick succession, the last one well inside the deflect window: mashing.
+    d.tick(s - 14);
     d.tap('guard'); // 2 ticks
-    d.tick(5);
-    d.press('guard'); // within the spam gap of the first press
-    d.tick(early + 2);
+    d.tick(2);
+    d.tap('guard');
+    d.tick(2);
+    d.press('guard'); // 5 ticks before contact
+    d.tick(8);
     expect(d.has('deflect')).toBe(false);
+    expect(d.has('block')).toBe(true);
+    expect(d.texts()).toContain('방패 연타');
+  });
+
+  it('긴장해서 두 번 누른 방패(더블 탭)는 연타가 아니다 — 두 번째가 띠 안이면 튕긴다', () => {
+    const { w, d, e } = duel('ronin', 2.2);
+    const s = enemyAttack(w, e, 'ro_cut1');
+    d.tick(s - 22);
+    d.tap('guard'); // too early
+    d.tick(10);
+    d.press('guard'); // in the band
+    d.tick(12);
+    expect(d.has('deflect')).toBe(true);
+  });
+
+  it('리듬 없이 방패만 두드려서는 절반도 튕기지 못한다 (어떤 연타 주기든, 쉬움 난이도 포함)', () => {
+    for (const scale of [1, 1.6]) {
+      for (const period of [4, 6, 8, 10, 14, 18, 24, 30]) {
+        let deflects = 0;
+        const trials = 30;
+        for (let phase = 0; phase < trials; phase++) {
+          const { w, d, e } = duel('ronin', 2.2);
+          w.settings.windowScale = scale;
+          w.settings.invincible = true;
+          // Blind tapping at a fixed period (press one tick, release the next), the attack
+          // arriving at an arbitrary phase.
+          const tapStep = (i: number) => {
+            if (i % period === 0) d.press('guard');
+            else if (i % period === 1 || period === 1) d.release('guard');
+            else d.step();
+          };
+          for (let i = 0; i < 60 + phase; i++) tapStep(i);
+          const s = enemyAttack(w, e, 'ro_cut2');
+          for (let i = 60 + phase; i < 60 + phase + s + 6; i++) tapStep(i);
+          if (d.has('deflect')) deflects++;
+        }
+        expect(deflects / trials, `scale ${scale} period ${period}`).toBeLessThanOrEqual(0.55);
+      }
+    }
   });
 
   it('침착한 한 번의 방패는 타격 12틱 전에 눌러도 튕긴다 (넉넉한 판정)', () => {

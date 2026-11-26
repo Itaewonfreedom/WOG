@@ -53,12 +53,15 @@ export function canCommit(w: World, e: Fighter): boolean {
  */
 export function contactClear(w: World, e: Fighter, m: MoveDef): boolean {
   if (m.feint || m.projectile) return true;
+  // The blow that landed last (its attacker may already be in recoil / hit-stun).
+  const last = w.lastEnemyContact;
+  if (last.id !== e.id && w.tick + m.startup - last.tick < T.attackSpacing) return false;
   for (const f of w.fighters) {
     if (f === e || f.team !== 'enemy' || !f.alive || f.act.kind !== 'attack') continue;
     const o = f.act.move;
     if (!o || o.feint || o.projectile) continue;
+    // Ticks until that blow lands (negative: it landed that many ticks ago).
     const left = o.startup - f.act.t;
-    if (left <= 0) continue; // already landing / recovering
     if (Math.abs(m.startup - left) < T.attackSpacing) return false;
   }
   return true;

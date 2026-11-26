@@ -102,29 +102,34 @@ describe('박자 규칙 (attack spacing)', () => {
     expect(contactClear(w, e2, m)).toBe(true);
   });
 
-  it('전투 시뮬레이션: 두 적의 타격 틱이 박자 간격보다 가깝게 겹치지 않는다', () => {
-    const w = new World(7);
-    w.mode = 'combat';
-    w.settings.invincible = true;
-    for (let i = 0; i < 4; i++) {
-      const e = w.spawn(i % 2 ? 'ronin' : 'spear', { x: Math.cos(i * 1.6) * 5, z: Math.sin(i * 1.6) * 5 }, 0);
-      e.brain!.aware = true;
-      e.hp = e.maxHp = 99999;
-    }
-    const contacts: number[] = [];
-    for (let i = 0; i < 6000; i++) {
-      w.step(emptyInput());
-      w.drainEvents();
-      if (w.hitstop > 0) continue;
-      for (const f of w.enemies()) {
-        const m = f.act.move;
-        if (f.act.kind === 'attack' && m && !m.feint && !m.projectile && f.act.t === m.startup) contacts.push(w.tick);
+  it('전투 시뮬레이션: 서로 다른 적의 타격 틱이 박자 간격보다 가깝게 겹치지 않는다 (여러 시드, 시노비 포함)', () => {
+    let total = 0;
+    let closest = Infinity;
+    for (const seed of [7, 11, 2026]) {
+      const w = new World(seed);
+      w.mode = 'combat';
+      w.settings.invincible = true;
+      for (let i = 0; i < 4; i++) {
+        // (The duelist's 24-tick opener is shorter than the spacing: the hard case.)
+        const e = w.spawn(i === 0 ? 'duelist' : i % 2 ? 'ronin' : 'spear', { x: Math.cos(i * 1.6) * 5, z: Math.sin(i * 1.6) * 5 }, 0);
+        e.brain!.aware = true;
+        e.hp = e.maxHp = 99999;
+      }
+      let last = { tick: -9999, id: -1 };
+      for (let i = 0; i < 6000; i++) {
+        w.step(emptyInput());
+        w.drainEvents();
+        if (w.hitstop > 0) continue;
+        for (const f of w.enemies()) {
+          const m = f.act.move;
+          if (f.act.kind !== 'attack' || !m || m.feint || m.projectile || f.act.t !== m.startup) continue;
+          total++;
+          if (last.id !== f.id) closest = Math.min(closest, w.tick - last.tick);
+          last = { tick: w.tick, id: f.id };
+        }
       }
     }
-    expect(contacts.length).toBeGreaterThan(20);
-    let closest = Infinity;
-    for (let i = 1; i < contacts.length; i++) closest = Math.min(closest, contacts[i] - contacts[i - 1]);
-    // Follow-ups of one enemy's own string are ≥ 20 + recovery apart; different enemies ≥ spacing.
+    expect(total).toBeGreaterThan(60);
     expect(closest).toBeGreaterThanOrEqual(T.attackSpacing);
   });
 });
@@ -155,3 +160,58 @@ describe('링 띠 = 실제 판정 창', () => {
     expect(run('ar_crush', 'armored', 2.6, 6).ok).toBe(false);
   });
 });
+
+describe('타이밍 피드백 (빨랐다 / 늦었다)', () => {
+  it('방패를 너무 일찍 눌러 막기가 되면 "빨랐다"와 몇 틱 일렀는지 알려준다', () => {
+    const { w, d, e } = duel('ronin', 2.2);
+    const s = enemyStart(w, e, 'ro_cut1');
+    d.tick(s - T.deflectWindow - 5);
+    d.press('guard');
+    d.tick(T.deflectWindow + 8);
+    expect(d.has('deflect')).toBe(false);
+    expect(d.has('block')).toBe(true);
+    const t = d.events.find((ev) => ev.type === 'text' && ev.text === '빨랐다');
+    expect(t).toBeTruthy();
+    expect((t as { sub?: string }).sub).toMatch(/^\d+틱 일찍/);
+  });
+
+  it('방패를 계속 들고 막은 것은 의도한 막기다 — 피드백 없음', () => {
+    const { w, d, e } = duel('ronin', 2.2);
+    d.press('guard');
+    d.tick(60);
+    const s = enemyStart(w, e, 'ro_cut1');
+    d.tick(s + 4);
+    expect(d.has('block')).toBe(true);
+    expect(d.texts()).not.toContain('빨랐다');
+  });
+
+  it('맞은 직후(히트스톱 포함)에 누른 방패는 "늦었다"', () => {
+    const { w, d, e } = duel('ronin', 2.2);
+    const s = enemyStart(w, e, 'ro_cut2') // no follow-up;
+    // Stop exactly on the tick the blow lands (do not skip its hit-stop).
+    for (let i = 0; i < s + 2 && !d.has('hit'); i++) d.step();
+    expect(d.has('hit')).toBe(true);
+    expect(w.hitstop).toBeGreaterThan(0);
+    d.step(['guard']); // pressed during the hit-stop of the blow
+    expect(d.texts()).toContain('늦었다');
+    // Only once, and not for a press long after.
+    d.tick(40);
+    d.step(['guard']);
+    expect(d.texts().filter((x) => x === '늦었다').length).toBe(1);
+  });
+
+  it('맞은 뒤 한참 지나 누른 방패에는 "늦었다"가 뜨지 않는다', () => {
+    const { w, d, e } = duel('ronin', 2.2);
+    const s = enemyStart(w, e, 'ro_cut1');
+    d.tick(s + 30);
+    expect(d.has('hit')).toBe(true);
+    d.step(['guard']);
+    expect(d.texts()).not.toContain('늦었다');
+  });
+});
+
+function enemyStart(w: World, e: import('../src/core/fighter').Fighter, id: string): number {
+  const m = getMove(id);
+  startEnemyAttack(w, e, m);
+  return m.startup;
+}

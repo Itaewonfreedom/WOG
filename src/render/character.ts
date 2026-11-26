@@ -602,7 +602,9 @@ export class CharacterView {
     };
     const F = HEADS[look.hat];
     const face = m(0xffffff, { map: tex(F.front, P) });
+    // Side rows are drawn for the −x face (hair at the back); the +x face is its mirror image.
     const side = m(0xffffff, { map: tex(F.side, P) });
+    const sideMirror = m(0xffffff, { map: tex(F.side.map((r) => [...r].reverse().join('')), P) });
     const top = m(P[F.top]);
     const chin = m(P[F.side[7][0]]);
     const add = (mesh: THREE.Mesh, x = 0, y = 0, z = 0) => {
@@ -610,7 +612,7 @@ export class CharacterView {
       g.add(mesh);
       return mesh;
     };
-    add(box(HS, HS, HS * 0.96, [side, side, top, chin, face, m(0xffffff, { map: tex(F.side.map((r) => r[0].repeat(8)), P) })]));
+    add(box(HS, HS, HS * 0.96, [sideMirror, side, top, chin, face, m(0xffffff, { map: tex(F.side.map((r) => r[0].repeat(8)), P) })]));
     const cloth = m(look.cloth);
     switch (look.hat) {
       case 'hood': {
@@ -880,11 +882,9 @@ export class CharacterView {
       sm.color.setHex(0x4a2428);
       sm.needsUpdate = true;
     }
-    for (const l of [this.uArmR, this.uArmL]) {
-      const am = toonMat(this.look.cloth2);
-      this.mats.push(am);
-      l.mesh.material = am;
-    }
+    const am = toonMat(this.look.cloth2);
+    this.mats.push(am);
+    for (const part of [this.uArmR.mesh, this.uArmL.mesh, this.joints[0], this.joints[1]]) part.material = am;
   }
 
   setFlash(v: number, color = 0xffffff): void {

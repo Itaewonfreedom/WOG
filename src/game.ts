@@ -186,6 +186,7 @@ export class Game {
     this.whooshes.length = 0;
     this.eventQueue.length = 0;
     this.cineSubjects = null;
+    this.focusId = null;
     this.timing.clear();
   }
 
@@ -358,7 +359,6 @@ export class Game {
     this.embers.update(simDt);
     this.mist.update(simDt);
     this.rings.update(simDt, this.cam.camera);
-    this.timing.update(w, this.cam.camera, this.pixel.height, (id) => this.views.get(id)?.char.root.position ?? null);
     this.decals.update(simDt);
 
     // Environment
@@ -374,16 +374,7 @@ export class Game {
       const lockPos = lock && lock.targetable ? this.views.get(lock.id)?.char.root.position ?? null : null;
       const crowd = w.liveEnemies().filter((e) => e.distTo(w.player) < 9).length;
       const mv = frame.move.x || frame.move.z ? V3(frame.move.x, 0, frame.move.z) : null;
-      // The nearest enemy that is fighting: the camera frames the duel around it.
-      let threat: THREE.Vector3 | null = null;
-      let near = 9;
-      for (const e of w.liveEnemies()) {
-        const d = e.distTo(w.player);
-        if (d < near && e.targetable && e.arch?.id !== 'dummy') {
-          near = d;
-          threat = this.views.get(e.id)?.char.root.position ?? null;
-        }
-      }
+      const threat = this.duelFocus();
       if (w.mode === 'standoff') {
         const leader = w.get(w.standoff.leaderId);
         if (leader && pv) this.cam.cinematic(focus, this.views.get(leader.id)?.char.root.position ?? focus, 'standoff', 0.2);
@@ -408,9 +399,39 @@ export class Game {
     const ps = w.ps;
     this.sfx.setDrawTension(w.player.is('aim') && ps.draw > 0 ? drawInfo(ps.draw, ps.arrowType).amount : null);
 
+    // Timing rings are placed with this frame's camera (rings of unseen attackers sit at the screen edge).
+    this.cam.camera.updateMatrixWorld();
+    this.timing.update(w, this.cam.camera, this.pixel.height, (id) => this.views.get(id)?.char.root.position ?? null);
     if (this.state !== 'title') this.hud.update(w, this.cam.camera, window.innerWidth, window.innerHeight, dt);
     this.pixel.render(this.scene, this.cam.camera);
   }
+
+  /**
+   * The enemy the unlocked camera frames the duel around: the current one for as long as it stays
+   * reasonable (no flip-flopping between enemies at similar distances), else the nearest.
+   * (Attackers outside the view are announced by their timing ring at the screen edge instead of
+   * by swinging the camera — the heading under the player's thumb stays put.)
+   */
+  private duelFocus(): THREE.Vector3 | null {
+    const w = this.world;
+    const p = w.player;
+    let nearest: Fighter | null = null;
+    let nearD = 9;
+    for (const e of w.liveEnemies()) {
+      if (!e.targetable || e.arch?.id === 'dummy') continue;
+      const d = e.distTo(p);
+      if (d < nearD) {
+        nearD = d;
+        nearest = e;
+      }
+    }
+    const cur = this.focusId !== null ? w.get(this.focusId) : null;
+    const curOk = !!cur && cur.alive && cur.targetable && cur.distTo(p) < 10;
+    const pick = curOk && (!nearest || cur!.distTo(p) < nearD + 2.5) ? cur! : nearest;
+    this.focusId = pick ? pick.id : null;
+    return pick ? this.views.get(pick.id)?.char.root.position ?? null : null;
+  }
+  private focusId: number | null = null;
 
   private titleCamera(dt: number): void {
     const t = this.time * 0.05;

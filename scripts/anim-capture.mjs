@@ -43,7 +43,7 @@ const SETUP_DUEL = (arch, dist, extra = '') => `
   const g = window.__game; g.start('practice');
   const w = g.world; w.enemies().forEach((e) => (e.hp = 0)); w.removeCorpses();
   w.player.pos = { x: 0, z: 0 }; w.player.prevPos = { x: 0, z: 0 }; w.player.yaw = 0; w.player.prevYaw = 0;
-  g.cam.yaw = 0; g.cam.pitch = 0.2;
+  g.cam.yaw = 0;
   const e = w.spawn('${arch}', { x: 0, z: ${dist} }, Math.PI); e.brain.aware = false; e.brain.cooldown = 1e9;
   window.__e = e; ${extra}
   for (const s of ['#help', '#tip', '.practice', '.click-hint', '#wave']) document.querySelectorAll(s).forEach((x) => (x.style.display = 'none'));
@@ -59,10 +59,10 @@ const SCENARIOS = {
     cam: SIDE,
     setup: SETUP_DUEL('ronin', 2.2),
     evals: [[5, ATTACK('ro_cut2')]],
-    hold: [[19, 23, 'ShiftLeft']],
-    keys: [[26, 'KeyJ']],
+    hold: [[21, 25, 'ShiftLeft']],
+    keys: [[30, 'KeyJ']],
   },
-  issen_gamecam: { frames: 170, cam: null, setup: SETUP_DUEL('ronin', 2.2), evals: [[5, ATTACK('ro_cut2')]], keys: [[20, 'KeyJ']] },
+  issen_gamecam: { frames: 170, cam: null, setup: SETUP_DUEL('ronin', 2.2), evals: [[5, ATTACK('ro_cut2')]], keys: [[23, 'KeyJ']] },
   flow_finisher: {
     frames: 210,
     cam: SIDE,
@@ -85,7 +85,7 @@ const SCENARIOS = {
     cam: null,
     setup: SETUP_DUEL('ronin', 2.2),
     evals: [[5, ATTACK('ro_cut2')]],
-    keys: [[20, 'KeyJ'], [30, 'Escape'], [70, 'Escape'], [120, 'Escape']],
+    keys: [[23, 'KeyJ'], [34, 'Escape'], [70, 'Escape'], [120, 'Escape']],
     evalsLate: [[122, `document.querySelector('[data-a="restart"]').click();`]],
   },
 };

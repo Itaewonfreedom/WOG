@@ -10,6 +10,11 @@ const VISUAL_LEAD = 2;
 const R_MAX = 1.75;
 const R_TARGET = 0.36; // fraction of R_MAX
 
+/** Screen-edge placement of rings whose attacker is out of view (NDC limits, depth in metres). */
+const EDGE_X = 0.86;
+const EDGE_Y = 0.8;
+const EDGE_DEPTH = 5;
+
 const COLORS = { white: new THREE.Color(0xfff6e0), blue: new THREE.Color(0x59b8ff), red: new THREE.Color(0xff3b2a) };
 
 const VERT = `varying vec2 vUv; void main(){ vUv = uv * 2.0 - 1.0; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }`;
@@ -55,6 +60,7 @@ export class TimingRings {
   private readonly items = new Map<number, Item>();
   private readonly tg = {} as Telegraph;
   private readonly pos = new THREE.Vector3();
+  private readonly inv = new THREE.Matrix4();
 
   private item(id: number): Item {
     let it = this.items.get(id);
@@ -92,9 +98,27 @@ export class TimingRings {
       if (!root) continue;
       const it = this.item(f.id);
       it.used = true;
-      const size = R_MAX * f.size;
+      let size = R_MAX * f.size;
       it.mesh.visible = true;
       it.mesh.position.set(root.x, 1.05 * f.size, root.z);
+      // An attacker outside the view: its ring slides to the screen edge on that side (smaller),
+      // so a blow from behind or from the flank is never unannounced.
+      const v = this.pos.copy(it.mesh.position).applyMatrix4(this.inv.copy(camera.matrixWorld).invert());
+      const tanY = 1 / p11;
+      const tanX = tanY * camera.aspect;
+      const nx = v.z < -0.05 ? v.x / (-v.z * tanX) : NaN;
+      const ny = v.z < -0.05 ? v.y / (-v.z * tanY) : NaN;
+      if (!(Math.abs(nx) < EDGE_X && Math.abs(ny) < EDGE_Y)) {
+        // Direction on screen (for a point behind the camera: the side it is on, pushed outward).
+        let dx = v.x;
+        let dy = v.z < -0.05 ? v.y : Math.min(v.y, -0.2 * Math.abs(v.x) - 0.01);
+        const l = Math.hypot(dx / tanX, dy / tanY) || 1;
+        dx /= tanX * l;
+        dy /= tanY * l;
+        const k = Math.min(EDGE_X / Math.max(1e-6, Math.abs(dx)), EDGE_Y / Math.max(1e-6, Math.abs(dy)));
+        it.mesh.position.set(dx * k * tanX * EDGE_DEPTH, dy * k * tanY * EDGE_DEPTH, -EDGE_DEPTH).applyMatrix4(camera.matrixWorld);
+        size = 0.42;
+      }
       it.mesh.quaternion.copy(camera.quaternion);
       it.mesh.scale.setScalar(size);
       const u = it.mat.uniforms;

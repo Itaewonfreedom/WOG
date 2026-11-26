@@ -35,8 +35,8 @@ const _r = new THREE.Vector3();
 const _eye = new THREE.Vector3();
 /** 도트 3D framing: a raised three-quarter view … */
 export const COMBAT_PITCH = 0.38;
-/** … that sits off the ranger→enemy line, so both fighters (and the enemy's whole wind-up) are
- *  seen side by side instead of the enemy hiding behind the ranger. */
+/** … whose view sits off the ranger→enemy line, so both fighters (and the enemy's whole
+ *  wind-up) are seen side by side instead of the enemy hiding behind the ranger. */
 const DUEL_YAW_OFFSET = 0.55;
 /** Frame-rate independent exponential approach factor. */
 const approach = (rate: number, dt: number) => 1 - Math.exp(-rate * dt);
@@ -52,6 +52,9 @@ export class CameraRig {
   private dist = 5.9;
   private wasAiming = false;
   private aimLevel = 0;
+  /** Rotation of the view relative to the control heading: the duel-framing offset plus the
+   *  view's catch-up when the heading turns to a target. Never part of the control heading. */
+  private frameYaw = 0;
   private readonly target = new THREE.Vector3(0, 1.4, 0);
   private readonly pos = new THREE.Vector3(0, 3, -5);
   private readonly look = new THREE.Vector3();
@@ -92,6 +95,7 @@ export class CameraRig {
     this.yaw -= dx * this.sensitivity;
     this.pitch = Math.max(-0.55, Math.min(1.1, this.pitch + dy * this.sensitivity));
     this.sinceManual = 0;
+    if (dy !== 0) this.aimLevel = 0;
   }
 
   shake(amount: number): void {
@@ -155,7 +159,8 @@ export class CameraRig {
     this.cine = null;
     _v.subVectors(this.cineLook, this.cinePos);
     if (_v.x * _v.x + _v.z * _v.z > 1e-6) {
-      this.yaw = Math.atan2(_v.x, _v.z);
+      // (The view is yaw + frameYaw: keep looking the way the shot looked.)
+      this.yaw = Math.atan2(_v.x, _v.z) - this.frameYaw;
       this.sinceManual = 0;
     }
   }
@@ -170,29 +175,46 @@ export class CameraRig {
     this.time += dt;
     this.sinceManual += dt;
 
-    // Lock-on / lazy follow.
-    if (opts.lockTarget && !opts.aiming) {
-      const d = _v.subVectors(opts.lockTarget, player);
-      const want = Math.atan2(d.x, d.z) + DUEL_YAW_OFFSET;
-      this.yaw += wrap(want - this.yaw) * approach(4, dt);
-      this.pitch += (COMBAT_PITCH - this.pitch) * approach(2, dt);
-    } else if (opts.threat && this.sinceManual > 1.2 && !opts.aiming) {
-      // Not locked on: drift (gently) to the same duel framing around the nearest enemy.
-      const d = _v.subVectors(opts.threat, player);
-      const want = Math.atan2(d.x, d.z) + DUEL_YAW_OFFSET;
-      this.yaw += wrap(want - this.yaw) * approach(1.6, dt);
+    // Lock-on / duel follow / lazy follow. `yaw` is the control heading: "forward" on the stick
+    // walks along it and the bow aims along it. Following a target points it AT the target right
+    // away (no lag: holding forward closes in instead of orbiting) …
+    const follow = opts.aiming ? null : opts.lockTarget ?? (this.sinceManual > 1.2 ? opts.threat ?? null : null);
+    let framed = false;
+    if (follow) {
+      const d = _v.subVectors(follow, player);
+      // (Standing on top of the target gives no direction: keep the current heading.)
+      if (d.x * d.x + d.z * d.z > 0.36) {
+        const turn = wrap(Math.atan2(d.x, d.z) - this.yaw) * approach(12, dt);
+        this.yaw += turn;
+        // … while the VIEW keeps its own, slower pace (it does not jump with the heading) …
+        this.frameYaw -= turn;
+        framed = true;
+      }
+      if (opts.lockTarget) this.pitch += (COMBAT_PITCH - this.pitch) * approach(2, dt);
     } else if (opts.moveDir && this.sinceManual > 1.5 && !opts.aiming) {
       const want = Math.atan2(opts.moveDir.x, opts.moveDir.z);
       const diff = wrap(want - this.yaw);
       if (Math.abs(diff) < 1.1) this.yaw += diff * approach(0.8, dt);
     }
+    // … and settles a little off the ranger→enemy line (duel framing): the enemy stands beside
+    // the ranger on screen, yet forward still closes in and left / right still circle evenly.
+    this.frameYaw = wrap(this.frameYaw);
+    if (framed) this.frameYaw += (DUEL_YAW_OFFSET - this.frameYaw) * approach(opts.lockTarget ? 4 : 1.6, dt);
+    else if (opts.aiming) this.frameYaw *= 1 - approach(14, dt); // the reticle swings onto the heading
+    else if (this.frameYaw !== 0) {
+      // Back to the free camera (the player took the view, or nobody is left to frame): the
+      // heading becomes what is on screen — the picture does not move.
+      this.yaw += this.frameYaw;
+      this.frameYaw = 0;
+    }
     // Drawing the bow levels the view (you aim along the arrow); lowering it returns to the
-    // raised combat view. Manual camera input always wins.
+    // raised combat view. Only the player's own vertical look input cancels the levelling.
     if (opts.aiming && !this.wasAiming) this.aimLevel = 0.35;
     this.wasAiming = opts.aiming;
+    if (!opts.aiming) this.aimLevel = 0;
     if (this.aimLevel > 0) {
       this.aimLevel -= dt;
-      if (this.sinceManual > 0.2) this.pitch += (0.1 - this.pitch) * approach(14, dt);
+      this.pitch += (0.1 - this.pitch) * approach(14, dt);
     } else if (!opts.aiming && this.sinceManual > 2) this.pitch += (COMBAT_PITCH - this.pitch) * approach(1.5, dt);
 
     this.aimBlend += ((opts.aiming ? 1 : 0) - this.aimBlend) * approach(12, dt);
@@ -201,8 +223,9 @@ export class CameraRig {
 
     // Follow framing.
     const aimK = this.aimBlend;
-    const f = fwd3(this.yaw, this.pitch, _f);
-    const r = rightOf(this.yaw, _r);
+    const viewYaw = this.yaw + this.frameYaw;
+    const f = fwd3(viewYaw, this.pitch, _f);
+    const r = rightOf(viewYaw, _r);
     this.target.lerp(_v.copy(player).setY(player.y + 1.45), approach(14, dt));
     const shoulder = 0.45 + aimK * 0.35;
     const d = this.dist * (1 - aimK) + 2.2 * aimK;

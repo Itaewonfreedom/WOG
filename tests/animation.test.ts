@@ -17,6 +17,8 @@ import { CharacterView, type CharKind } from '../src/render/character';
 import { SwordTrail } from '../src/render/fx';
 import { trailSpec, type TrailSpec } from '../src/render/trail-spec';
 import { CameraRig } from '../src/render/camera';
+import { TimingRings } from '../src/render/timing-ring';
+import { contactClear } from '../src/core/ai';
 import { applyKey, basePose, slerpDir, type Pose } from '../src/render/pose';
 import { Driver, duel } from './helpers';
 
@@ -1806,5 +1808,173 @@ describe('리뷰 회귀 5', () => {
       }
     }
     expect(checked).toBeGreaterThan(0);
+  });
+});
+
+// ── 13. Review round 6: 도트 3D · 타이밍 링 · 결투 시점 ─────────────────────────
+describe('리뷰 회귀 6', () => {
+  const camOpts = (o: Partial<Parameters<CameraRig['update']>[2]> = {}) => ({ aiming: false, lockTarget: null, crowd: 0, moveDir: null, slowmo: false, ...o });
+
+  it('락온: 조작 방향(yaw)은 적을 향하고, 화면만 그 선에서 비켜 본다 (전진 = 접근, 좌우 대칭)', () => {
+    const cam = new CameraRig(16 / 9);
+    const player = new THREE.Vector3(0, 0, 0);
+    const target = new THREE.Vector3(3, 0, 4);
+    for (let i = 0; i < 240; i++) cam.update(1 / 60, player, camOpts({ lockTarget: target }));
+    const toTarget = Math.atan2(target.x, target.z);
+    // The control heading points at the target: "forward" walks straight at it.
+    expect(Math.abs(cam.yaw - toTarget)).toBeLessThan(0.02);
+    // The view is rotated off that line (duel framing): the camera is NOT on the line behind the ranger.
+    const back = new THREE.Vector3(-Math.sin(toTarget), 0, -Math.cos(toTarget));
+    const camFlat = cam.camera.position.clone().setY(0).normalize();
+    expect(camFlat.angleTo(back)).toBeGreaterThan(0.3);
+    // Both fighters are on screen, side by side.
+    cam.camera.updateMatrixWorld();
+    const a = player.clone().setY(1).project(cam.camera);
+    const b = target.clone().setY(1).project(cam.camera);
+    expect(Math.abs(a.x)).toBeLessThan(0.9);
+    expect(Math.abs(b.x)).toBeLessThan(0.9);
+    expect(Math.abs(a.x - b.x)).toBeGreaterThan(0.15);
+  });
+
+  it('활 조준: 비켜 보던 화면이 조작 방향으로 돌아오고(조준선 = 락온한 적), 가로 시점 입력이 수평 맞춤을 끊지 않는다', () => {
+    const cam = new CameraRig(16 / 9);
+    const player = new THREE.Vector3(0, 0, 0);
+    const target = new THREE.Vector3(0, 0, 6);
+    for (let i = 0; i < 240; i++) cam.update(1 / 60, player, camOpts({ lockTarget: target }));
+    for (let i = 0; i < 90; i++) {
+      if (i < 24) cam.look2(0.5, 0); // sweeping the view sideways while drawing
+      cam.update(1 / 60, player, camOpts({ lockTarget: target, aiming: true }));
+    }
+    const o = new THREE.Vector3();
+    const d = new THREE.Vector3();
+    cam.aimRay(o, d);
+    // The reticle looks along the control heading (no leftover framing offset) …
+    expect(Math.abs(Math.atan2(d.x, d.z) - cam.yaw)).toBeLessThan(0.03);
+    // … and the view has levelled out (the ray does not dive into the ground a few metres ahead).
+    expect(cam.pitch).toBeLessThan(0.16);
+  });
+
+  it('락온 없이도 조작 방향은 가까운 적을 향한다 — 전진을 누르고 있으면 맴돌지 않고 적에게 닿고, 화면은 천천히 따라온다', () => {
+    const cam = new CameraRig(16 / 9);
+    const player = new THREE.Vector3(0, 0, 0);
+    const enemy = new THREE.Vector3(4, 0, 3);
+    let minD = Infinity;
+    let maxViewTurn = 0;
+    const dir = new THREE.Vector3();
+    let lastView = Number.NaN;
+    for (let i = 0; i < 360; i++) {
+      cam.update(1 / 60, player, camOpts({ threat: enemy }));
+      cam.camera.getWorldDirection(dir);
+      const view = Math.atan2(dir.x, dir.z);
+      if (!Number.isNaN(lastView)) {
+        let dv = view - lastView;
+        while (dv > Math.PI) dv -= Math.PI * 2;
+        while (dv < -Math.PI) dv += Math.PI * 2;
+        maxViewTurn = Math.max(maxViewTurn, Math.abs(dv));
+      }
+      lastView = view;
+      // Hold "forward": camera-relative, like InputDevices.sample.
+      const d = player.distanceTo(enemy);
+      minD = Math.min(minD, d);
+      if (d > 0.9) player.add(new THREE.Vector3(Math.sin(cam.yaw), 0, Math.cos(cam.yaw)).multiplyScalar(5.4 / 60));
+    }
+    // Arrives inside sword reach (r_s1 reaches 2.3 m) and stays there — no wide orbit.
+    expect(minD).toBeLessThan(1.0);
+    expect(player.distanceTo(enemy)).toBeLessThan(1.1);
+    // The heading snapped to the enemy, the view did not: it turned smoothly (< 3° per frame).
+    expect(maxViewTurn).toBeLessThan(0.05);
+  });
+
+  it('박자 규칙: 발동이 짧은 공격도 다른 적의 타격 직후 26틱 안에는 닿지 않는다', () => {
+    const { w, e } = duelWorld('ronin', 2.2);
+    const e2 = w.spawn('duelist', { x: 1.5, z: 2 }, Math.PI);
+    e2.brain!.aware = false;
+    e2.brain!.cooldown = 1e9;
+    const first = getMove('ro_cut1');
+    const fast = getMove('du_f1');
+    startEnemyAttack(w, e, first);
+    e.brain!.aware = false;
+    let started = -1;
+    const sim = new Sim(w, 60);
+    for (let i = 0; i < first.startup + 20 && started < 0; i++) {
+      sim.frame();
+      if (e.act.kind === 'attack' && contactClear(w, e2, fast)) started = e.act.t;
+    }
+    expect(started).toBeGreaterThan(0);
+    // Contact of the second blow relative to the first one's.
+    expect(started + fast.startup - first.startup).toBeGreaterThanOrEqual(T.attackSpacing);
+  });
+
+  it('적을 따라보던 중 직접 시점을 돌리면 화면이 튀지 않고 그 화면 방향이 조작 방향이 된다', () => {
+    const cam = new CameraRig(16 / 9);
+    const player = new THREE.Vector3(0, 0, 0);
+    const enemy = new THREE.Vector3(0, 0, 4);
+    for (let i = 0; i < 300; i++) cam.update(1 / 60, player, camOpts({ threat: enemy }));
+    const dir = new THREE.Vector3();
+    cam.camera.getWorldDirection(dir);
+    const before = Math.atan2(dir.x, dir.z);
+    expect(Math.abs(before - cam.yaw)).toBeGreaterThan(0.4); // framed: view ≠ heading
+    cam.look2(1, 0); // a nudge of the mouse / stick
+    cam.update(1 / 60, player, camOpts({ threat: enemy }));
+    cam.camera.getWorldDirection(dir);
+    const after = Math.atan2(dir.x, dir.z);
+    expect(Math.abs(after - before)).toBeLessThan(0.03); // no jump
+    expect(Math.abs(after - cam.yaw)).toBeLessThan(0.03); // forward = into the screen again
+  });
+
+  it('머리 옆면: 왼쪽·오른쪽 면이 거울상 텍스처를 쓴다 (머리카락은 양쪽 모두 뒤통수 쪽)', () => {
+    const ch = new CharacterView('ronin', new THREE.Texture());
+    const head = (ch as unknown as { head: THREE.Group }).head.children[0] as THREE.Mesh;
+    const mats = head.material as THREE.MeshToonMaterial[];
+    const px = mats[0].map as THREE.DataTexture;
+    const nx = mats[1].map as THREE.DataTexture;
+    expect(px).not.toBe(nx);
+    const w = px.image.width;
+    const row = 4; // a row that has both hair and skin
+    const at = (t: THREE.DataTexture, x: number) => Array.from((t.image.data as Uint8Array).slice((row * w + x) * 4, (row * w + x) * 4 + 3)).join(',');
+    for (let x = 0; x < w; x++) expect(at(px, x)).toBe(at(nx, w - 1 - x));
+    expect(at(px, 0)).not.toBe(at(px, w - 1));
+  });
+
+  it('갑옷 파쇄 뒤에는 팔꿈치 관절에도 미늘 무늬가 남지 않는다', () => {
+    const ch = new CharacterView('boss', new THREE.Texture());
+    ch.shatterArmor();
+    const c = ch as unknown as { joints: THREE.Mesh[]; uArmR: { mesh: THREE.Mesh } };
+    expect((c.joints[0].material as THREE.MeshToonMaterial).map).toBeNull();
+    expect((c.joints[1].material as THREE.MeshToonMaterial).map).toBeNull();
+    expect((c.uArmR.mesh.material as THREE.MeshToonMaterial).map).toBeNull();
+  });
+
+  it('타이밍 링: 화면 밖(등 뒤)에서 공격하는 적의 링은 화면 가장자리 안쪽에 그려진다', () => {
+    for (const where of ['behind', 'side', 'front'] as const) {
+      const w = soloWorld();
+      const pos = where === 'behind' ? { x: 0.5, z: -12 } : where === 'side' ? { x: 14, z: 2 } : { x: 0, z: 3 };
+      const e = w.spawn('ronin', pos, 0);
+      e.brain!.aware = false;
+      e.brain!.cooldown = 1e9;
+      const sim = new Sim(w, 60);
+      sim.run(2);
+      startEnemyAttack(w, e, getMove('ro_lunge'));
+      e.brain!.aware = false;
+      sim.run(20);
+      const cam = new THREE.PerspectiveCamera(50, 16 / 9, 0.05, 900);
+      cam.position.set(0, 3.5, -5);
+      cam.lookAt(0, 1, 2);
+      cam.updateMatrixWorld();
+      const rings = new TimingRings();
+      rings.update(w, cam, 240, (id) => (id === e.id ? new THREE.Vector3(e.pos.x, 0, e.pos.z) : null));
+      const mesh = rings.group.children[0] as THREE.Mesh;
+      expect(mesh, where).toBeTruthy();
+      expect(mesh.visible, where).toBe(true);
+      const ndc = mesh.position.clone().project(cam);
+      // Always inside the frame, and in front of the camera.
+      expect(Math.abs(ndc.x), where).toBeLessThan(0.9);
+      expect(Math.abs(ndc.y), where).toBeLessThan(0.9);
+      expect(ndc.z, where).toBeLessThan(1);
+      const local = mesh.position.clone().applyMatrix4(cam.matrixWorldInverse);
+      expect(local.z, where).toBeLessThan(0);
+      if (where === 'side') expect(ndc.x).toBeLessThan(-0.5); // +x world is screen-left for this camera
+      if (where === 'front') expect(mesh.position.distanceTo(new THREE.Vector3(e.pos.x, 1.05, e.pos.z))).toBeLessThan(1e-6);
+    }
   });
 });

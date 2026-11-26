@@ -17,6 +17,7 @@ import { MOVES } from './moves';
 import { HITSTOP, T } from './tuning';
 import type { AttackType, DefenseRule, FinisherKind, MoveDef } from './types';
 import type { World } from './world';
+import type { InputFrame } from './input';
 import { spawnEnemyProjectile, quickshotRelease } from './bow';
 import { FINISHER_TL, GALE_TL, ISSEN_TL, releaseTicks } from './timeline';
 
@@ -168,6 +169,10 @@ export function stepAttack(w: World, f: Fighter): void {
   // itself lands on the first active tick.
   if (!m.projectile && a.t === Math.max(1, m.startup - releaseTicks(m))) w.emit({ type: 'swing', id: f.id, move: m });
   if (a.t === m.startup) {
+    if (!f.isPlayer && !m.projectile) {
+      w.lastEnemyContact.tick = w.tick;
+      w.lastEnemyContact.id = f.id;
+    }
     if (m.projectile) {
       w.emit({ type: 'swing', id: f.id, move: m });
       spawnEnemyProjectile(w, f, m);
@@ -203,14 +208,20 @@ export function playerInvulnerable(w: World, p: Fighter): boolean {
   return p.is('finisher', 'issen', 'flow', 'gale', 'dead');
 }
 
+/** Buckler mashing: too many presses lately, none of which deflected anything (see tuning). */
+export function guardMashed(w: World): boolean {
+  const span = T.deflectMashSpan * w.win(T.deflectWindow);
+  const presses = w.buffer.pressesSince('guard', w.tick - span + 1);
+  if (presses.length < T.deflectMashPresses) return false;
+  // A successful deflect since the oldest counted press: chained deflects are not mashing.
+  return w.ps.lastDeflectTick < presses[T.deflectMashPresses - 1];
+}
+
 /** Is the player's buckler currently able to deflect? */
 export function deflectReady(w: World, p: Fighter): boolean {
   if (!p.is('guard', 'deflect', 'blockstun')) return false;
-  const ps = w.ps;
-  // Re-pressing right after a successful deflect (chain deflects) is not spam.
-  const spam = ps.guardStartTick - ps.prevGuardStartTick < T.deflectSpamGap && ps.lastDeflectTick < ps.prevGuardStartTick;
-  const window = w.win(spam ? T.deflectSpamWindow : T.deflectWindow);
-  return w.tick - ps.guardStartTick <= window;
+  if (w.tick - w.ps.guardStartTick > w.win(T.deflectWindow)) return false;
+  return !guardMashed(w);
 }
 
 /** 완벽 회피 (Mikiri): the blow comes out within the first few invulnerable ticks of a dodge. */
@@ -267,14 +278,42 @@ export function resolveOnPlayer(w: World, att: Fighter, p: Fighter, m: MoveDef):
       doDeflect(w, p, att);
       return;
     }
+    // Timing feedback: the buckler was raised by a fresh press, but too soon (or mashed).
+    const early = ub !== 'red' ? earlyGuard(w) : null;
     if (ub === 'none') {
+      if (early) w.emit({ type: 'text', text: early.text, sub: early.sub, style: 'info', id: p.id });
       doBlock(w, p, att, m);
       return;
     }
     // blue / red through a raised guard: the small buckler is smashed aside.
-    w.emit({ type: 'text', text: ub === 'red' ? '막을 수 없다' : '튕기기로만 막힌다', style: 'bad', id: p.id });
+    if (early) w.emit({ type: 'text', text: early.text, sub: `${early.sub} · 파란 링은 튕기기로만`, style: 'bad', id: p.id });
+    else w.emit({ type: 'text', text: ub === 'red' ? '막을 수 없다' : '튕기기로만 막힌다', style: 'bad', id: p.id });
+  } else if (ub !== 'red' && !m.projectile) {
+    // Nothing raised: a buckler press right after this is "late".
+    w.ps.struckTick = w.tick;
   }
   damagePlayer(w, att, p, m.damage, ub !== 'none' || m.damage >= 20);
+}
+
+/** A fresh buckler press that missed the deflect window by coming too early (or by mashing). */
+function earlyGuard(w: World): { text: string; sub: string } | null {
+  const ps = w.ps;
+  const held = w.tick - ps.guardStartTick;
+  const window = w.win(T.deflectWindow);
+  if (held <= window) return { text: '방패 연타', sub: '연타한 방패는 막기만 된다' };
+  if (held > window + 30) return null; // simply holding the guard up: a deliberate block
+  return { text: '빨랐다', sub: `${held - window}틱 일찍` };
+}
+
+/**
+ * 타이밍 피드백: the buckler pressed just after a blow already landed. Called every step
+ * (also during the hit-stop of that blow, when the late press usually arrives).
+ */
+export function lateGuardFeedback(w: World, input: InputFrame): void {
+  const ps = w.ps;
+  if (ps.struckTick < 0 || !input.pressed.guard) return;
+  if (w.tick - ps.struckTick <= 10 && w.player.alive) w.emit({ type: 'text', text: '늦었다', sub: '링이 닿기 전에', style: 'bad', id: w.player.id });
+  ps.struckTick = -9999;
 }
 
 export function damagePlayer(w: World, att: Fighter, p: Fighter, damage: number, heavy: boolean): void {

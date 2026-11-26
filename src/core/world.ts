@@ -4,7 +4,7 @@ import { emptyInput, InputBuffer, type Button, type InputFrame } from './input';
 import { add, clamp, dist, fromYaw, len, norm, Rng, scale, sub, turnToward, type Vec2 } from './math';
 import { DT, T } from './tuning';
 import type { ArchetypeId, ArrowType, CombatEvent, Projectile } from './types';
-import { killBookkeeping, stepAttack, stepGale, stepScripted } from './combat';
+import { killBookkeeping, lateGuardFeedback, stepAttack, stepGale, stepScripted } from './combat';
 import { updatePlayer } from './player';
 import { updateAI, makeBrain } from './ai';
 import { stepProjectiles } from './bow';
@@ -50,6 +50,8 @@ export interface PlayerState {
   lastPerfectDodgeTick: number;
   /** Tick of the last successful deflect (chain deflects are exempt from the spam penalty). */
   lastDeflectTick: number;
+  /** Tick a blow got past an unraised buckler (for the "늦었다" timing feedback; -9999 = none). */
+  struckTick: number;
 }
 
 export interface WorldSettings {
@@ -92,6 +94,9 @@ export class World {
   readonly buffer = new InputBuffer();
   readonly rng: Rng;
   readonly settings: WorldSettings = { windowScale: 1, invincible: false, enemyDamage: 1 };
+  /** The last enemy melee blow that reached its contact tick (박자 규칙: spacing also holds after
+   *  that attacker was deflected or interrupted and its action is gone). */
+  lastEnemyContact = { tick: -9999, id: -1 };
   readonly stats: Stats = { deflects: 0, flows: 0, issens: 0, maxIssenChain: 0, finishers: 0, headshots: 0, kills: 0, perfectDodges: 0, effectiveHits: 0, badHits: 0, standoffKills: 0, damageTaken: 0, time: 0 };
   mode: WorldMode = 'combat';
   waves: WaveDirector | null = null;
@@ -152,6 +157,7 @@ export class World {
       perfectDodgeTick: -1,
       lastPerfectDodgeTick: -9999,
       lastDeflectTick: -9999,
+      struckTick: -9999,
     };
     this.standoff = new Standoff();
   }
@@ -300,6 +306,7 @@ export class World {
   step(input: InputFrame): void {
     this.input = input;
     this.buffer.record(input, this.tick);
+    lateGuardFeedback(this, input);
 
     if (this.hitstop > 0) {
       this.hitstop--;
