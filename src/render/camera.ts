@@ -33,6 +33,11 @@ const UP = new THREE.Vector3(0, 1, 0);
 const _f = new THREE.Vector3();
 const _r = new THREE.Vector3();
 const _eye = new THREE.Vector3();
+/** 도트 3D framing: a raised three-quarter view … */
+export const COMBAT_PITCH = 0.38;
+/** … that sits off the ranger→enemy line, so both fighters (and the enemy's whole wind-up) are
+ *  seen side by side instead of the enemy hiding behind the ranger. */
+const DUEL_YAW_OFFSET = 0.55;
 /** Frame-rate independent exponential approach factor. */
 const approach = (rate: number, dt: number) => 1 - Math.exp(-rate * dt);
 
@@ -43,8 +48,10 @@ const approach = (rate: number, dt: number) => 1 - Math.exp(-rate * dt);
 export class CameraRig {
   readonly camera: THREE.PerspectiveCamera;
   yaw = 0;
-  pitch = 0.2;
-  private dist = 5.2;
+  pitch = COMBAT_PITCH;
+  private dist = 5.9;
+  private wasAiming = false;
+  private aimLevel = 0;
   private readonly target = new THREE.Vector3(0, 1.4, 0);
   private readonly pos = new THREE.Vector3(0, 3, -5);
   private readonly look = new THREE.Vector3();
@@ -159,24 +166,37 @@ export class CameraRig {
     this.cineBlend = 0;
   }
 
-  update(dt: number, player: THREE.Vector3, opts: { aiming: boolean; lockTarget: THREE.Vector3 | null; crowd: number; moveDir: THREE.Vector3 | null; slowmo: boolean }): void {
+  update(dt: number, player: THREE.Vector3, opts: { aiming: boolean; lockTarget: THREE.Vector3 | null; crowd: number; moveDir: THREE.Vector3 | null; slowmo: boolean; threat?: THREE.Vector3 | null }): void {
     this.time += dt;
     this.sinceManual += dt;
 
     // Lock-on / lazy follow.
     if (opts.lockTarget && !opts.aiming) {
       const d = _v.subVectors(opts.lockTarget, player);
-      const want = Math.atan2(d.x, d.z);
+      const want = Math.atan2(d.x, d.z) + DUEL_YAW_OFFSET;
       this.yaw += wrap(want - this.yaw) * approach(4, dt);
-      this.pitch += (0.22 - this.pitch) * approach(2, dt);
+      this.pitch += (COMBAT_PITCH - this.pitch) * approach(2, dt);
+    } else if (opts.threat && this.sinceManual > 1.2 && !opts.aiming) {
+      // Not locked on: drift (gently) to the same duel framing around the nearest enemy.
+      const d = _v.subVectors(opts.threat, player);
+      const want = Math.atan2(d.x, d.z) + DUEL_YAW_OFFSET;
+      this.yaw += wrap(want - this.yaw) * approach(1.6, dt);
     } else if (opts.moveDir && this.sinceManual > 1.5 && !opts.aiming) {
       const want = Math.atan2(opts.moveDir.x, opts.moveDir.z);
       const diff = wrap(want - this.yaw);
       if (Math.abs(diff) < 1.1) this.yaw += diff * approach(0.8, dt);
     }
+    // Drawing the bow levels the view (you aim along the arrow); lowering it returns to the
+    // raised combat view. Manual camera input always wins.
+    if (opts.aiming && !this.wasAiming) this.aimLevel = 0.35;
+    this.wasAiming = opts.aiming;
+    if (this.aimLevel > 0) {
+      this.aimLevel -= dt;
+      if (this.sinceManual > 0.2) this.pitch += (0.1 - this.pitch) * approach(14, dt);
+    } else if (!opts.aiming && this.sinceManual > 2) this.pitch += (COMBAT_PITCH - this.pitch) * approach(1.5, dt);
 
     this.aimBlend += ((opts.aiming ? 1 : 0) - this.aimBlend) * approach(12, dt);
-    const wantDist = 4.8 + Math.min(2, opts.crowd * 0.45) - (opts.slowmo ? 0.6 : 0);
+    const wantDist = 5.7 + Math.min(2.4, opts.crowd * 0.5) - (opts.slowmo ? 0.6 : 0);
     this.dist += (wantDist - this.dist) * approach(2.5, dt);
 
     // Follow framing.
@@ -184,13 +204,15 @@ export class CameraRig {
     const f = fwd3(this.yaw, this.pitch, _f);
     const r = rightOf(this.yaw, _r);
     this.target.lerp(_v.copy(player).setY(player.y + 1.45), approach(14, dt));
-    const shoulder = 0.35 + aimK * 0.45;
+    const shoulder = 0.45 + aimK * 0.35;
     const d = this.dist * (1 - aimK) + 2.2 * aimK;
     const eye = _eye.copy(this.target).addScaledVector(r, shoulder).addScaledVector(f, -d);
     eye.y += aimK * 0.1;
     eye.y = Math.max(0.35, eye.y);
     this.pos.copy(eye);
+    // Look a little past the ranger so the fight ahead sits mid-screen.
     this.look.copy(this.target).addScaledVector(r, shoulder).addScaledVector(f, 4);
+    this.look.y -= (1 - aimK) * 0.5;
 
     // Cinematic override: the framing axis is fixed when the shot starts, the subjects are
     // followed live, and the view drifts to the contact point around the blow.
@@ -234,7 +256,7 @@ export class CameraRig {
       this.cineLook.lerp(lookAt, approach(8, dt));
       if (c.t >= (c.progress === null ? c.dur : c.maxDur)) this.releaseCinematic();
     }
-    this.cineBlend += ((this.cine ? 1 : 0) - this.cineBlend) * approach(this.cine ? 14 : 4, dt);
+    this.cineBlend += ((this.cine ? 1 : 0) - this.cineBlend) * approach(this.cine ? 14 : 2.6, dt);
     if (this.cineBlend < 0.001) this.cineBlend = 0;
     const k = smooth(this.cineBlend);
     const finalPos = _fin.copy(this.pos).lerp(this.cinePos, k);
@@ -255,7 +277,7 @@ export class CameraRig {
     // Keep the shot's lens while blending back out (the blend weight k takes it to the follow FOV).
     if (this.cine) this.cineFov = this.cine.style === 'standoff' ? 38 : 44;
     const cineFov = this.cineFov;
-    const fov = 58 * (1 - aimK) + 46 * aimK;
+    const fov = 50 * (1 - aimK) + 46 * aimK;
     this.fovKick *= Math.pow(0.02, dt);
     this.camera.fov = fov * (1 - k) + cineFov * k - this.fovKick;
     this.camera.updateProjectionMatrix();

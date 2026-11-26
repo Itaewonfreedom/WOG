@@ -953,7 +953,7 @@ describe('피니쉬 카메라', () => {
     expect(maxMove).toBeLessThan(0.12);
     expect(maxFov).toBeLessThan(1.5);
     // Back on the follow lens.
-    expect(cam.camera.fov).toBeGreaterThan(56);
+    expect(cam.camera.fov).toBeGreaterThan(48);
   });
 });
 

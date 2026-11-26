@@ -16,7 +16,7 @@ export type SfxName =
   | 'flow' | 'issen' | 'finisher' | 'finisherImpact'
   | 'guardBreak' | 'postureBreak' | 'perfectDodge' | 'dodge'
   | 'bowDraw' | 'bowRelease' | 'bowPerfect' | 'arrowHit' | 'arrowHeadshot' | 'arrowBlock' | 'arrowWhiz'
-  | 'glintBlue' | 'glintRed'
+  | 'glintBlue' | 'glintRed' | 'cue'
   | 'kill' | 'resolve' | 'heal' | 'fear' | 'shieldOpen' | 'armorShatter'
   | 'standoffTension' | 'standoffStrike'
   | 'waveStart' | 'waveClear' | 'victory' | 'defeat'
@@ -373,6 +373,12 @@ const SOUNDS: Record<SfxName, (v: Voice) => void> = {
     v.tone({ type: 'square', f: 110, filt: ['lowpass', 600], d: 0.3, g: 0.1 });
   },
 
+  // Timing-ring cue: "the window is open — answer now".
+  cue: (v) => {
+    v.tone({ type: 'square', f: 1320, filt: ['lowpass', 3200], d: 0.07, g: 0.16 });
+    v.tone({ f: 2640, d: 0.04, g: 0.07 });
+  },
+
   // --- State & feedback ------------------------------------------------------
   kill: (v) => {
     v.tone({ f: 90, f2: 45, d: 0.25, g: 0.5 });
@@ -471,7 +477,7 @@ const HALL: Partial<Record<SfxName, number>> = {
 
 /** Musical / signalling sounds that should not get random pitch variation. */
 const STEADY: ReadonlySet<SfxName> = new Set<SfxName>([
-  'victory', 'defeat', 'waveClear', 'uiSelect', 'glintBlue', 'glintRed', 'heal', 'resolve',
+  'victory', 'defeat', 'waveClear', 'uiSelect', 'glintBlue', 'glintRed', 'cue', 'heal', 'resolve',
 ]);
 
 // ---------------------------------------------------------------------------

@@ -10,11 +10,14 @@ import { FINISHER_TL, ISSEN_TL, releaseTicks } from './core/timeline';
 import { emptyInput } from './core/input';
 import { startEnemyAttack } from './core/ai';
 import { createEnvironment, type Environment } from './render/environment';
-import { CharacterView, setMetalEnvironment, type CharKind } from './render/character';
+import { CharacterView, type CharKind } from './render/character';
+import { box, toonMat } from './render/voxel';
 import { Animator, actionTime } from './render/anim';
 import type { Landing } from './render/feet';
 import { trailSpec, type TrailSpec } from './render/trail-spec';
-import { CameraRig } from './render/camera';
+import { CameraRig, COMBAT_PITCH } from './render/camera';
+import { PixelPipeline } from './render/pixel';
+import { TimingRings } from './render/timing-ring';
 import { Decals, makeGlintTexture, Puffs, Rings, Sparks, SwordTrail } from './render/fx';
 import { InputDevices } from './input/devices';
 import { TouchControls } from './input/touch';
@@ -61,6 +64,7 @@ const V3 = (x = 0, y = 0, z = 0) => new THREE.Vector3(x, y, z);
 
 export class Game {
   private readonly renderer: THREE.WebGLRenderer;
+  private readonly pixel: PixelPipeline;
   private readonly scene = new THREE.Scene();
   private env: Environment;
   private readonly cam: CameraRig;
@@ -75,6 +79,7 @@ export class Game {
   private readonly embers = new Puffs(700, true);
   private readonly mist = new Puffs(900, false);
   private readonly rings = new Rings();
+  private readonly timing = new TimingRings();
   private readonly decals = new Decals();
   private readonly glintTex = makeGlintTexture();
   private state: State = 'title';
@@ -104,14 +109,13 @@ export class Game {
 
   constructor(container: HTMLElement) {
     this.settings = loadSettings();
-    this.renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' });
-    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, this.settings.quality === 'high' ? 1.75 : 1));
+    this.renderer = new THREE.WebGLRenderer({ antialias: false, powerPreference: 'high-performance' });
+    this.pixel = new PixelPipeline(this.renderer);
     container.appendChild(this.renderer.domElement);
     this.env = createEnvironment(this.scene, this.renderer, { arenaRadius: T.arenaRadius, quality: this.settings.quality });
     this.envQuality = this.settings.quality;
-    setMetalEnvironment(makeSkyReflection(this.renderer));
     this.cam = new CameraRig(1);
-    this.scene.add(this.sparks.mesh, this.embers.points, this.mist.points, this.rings.group, this.decals.mesh);
+    this.scene.add(this.sparks.mesh, this.embers.points, this.mist.points, this.rings.group, this.decals.mesh, this.timing.group);
     this.devices = new InputDevices(this.renderer.domElement);
     this.touch = new TouchControls(document.body, () => {
       this.devices.lastDevice = 'touch';
@@ -182,6 +186,7 @@ export class Game {
     this.whooshes.length = 0;
     this.eventQueue.length = 0;
     this.cineSubjects = null;
+    this.timing.clear();
   }
 
   start(mode: 'campaign' | 'practice'): void {
@@ -203,7 +208,7 @@ export class Game {
       this.hud.showWave('수련장', '왼쪽 버튼으로 적을 불러내 연습하라', 3);
     }
     this.cam.yaw = 0;
-    this.cam.pitch = 0.2;
+    this.cam.pitch = COMBAT_PITCH;
     this.cam.endCinematic();
     this.state = 'play';
     this.resultTimer = -1;
@@ -251,7 +256,7 @@ export class Game {
     if (this.envQuality !== s.quality) {
       this.env.dispose();
       this.env = createEnvironment(this.scene, this.renderer, { arenaRadius: T.arenaRadius, quality: s.quality });
-      this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, s.quality === 'high' ? 1.75 : 1));
+      this.envQuality = s.quality;
       this.resize();
     }
     this.envQuality = s.quality;
@@ -281,12 +286,12 @@ export class Game {
   private resize(): void {
     const w = window.innerWidth;
     const h = window.innerHeight;
-    this.renderer.setSize(w, h);
-    this.cam.camera.aspect = w / h;
+    // 도트 3D: fine dots on "high", chunkier (and cheaper) on "low".
+    this.pixel.resize(w, h, this.envQuality === 'high' ? 270 : 216);
+    this.cam.camera.aspect = this.pixel.width / this.pixel.height;
     this.cam.camera.updateProjectionMatrix();
-    const dpr = this.renderer.getPixelRatio();
-    this.embers.setViewportHeight(h * dpr);
-    this.mist.setViewportHeight(h * dpr);
+    this.embers.setViewportHeight(this.pixel.height);
+    this.mist.setViewportHeight(this.pixel.height);
   }
 
   // ── Frame ────────────────────────────────────────────────────────────────
@@ -353,6 +358,7 @@ export class Game {
     this.embers.update(simDt);
     this.mist.update(simDt);
     this.rings.update(simDt, this.cam.camera);
+    this.timing.update(w, this.cam.camera, this.pixel.height, (id) => this.views.get(id)?.char.root.position ?? null);
     this.decals.update(simDt);
 
     // Environment
@@ -368,12 +374,22 @@ export class Game {
       const lockPos = lock && lock.targetable ? this.views.get(lock.id)?.char.root.position ?? null : null;
       const crowd = w.liveEnemies().filter((e) => e.distTo(w.player) < 9).length;
       const mv = frame.move.x || frame.move.z ? V3(frame.move.x, 0, frame.move.z) : null;
+      // The nearest enemy that is fighting: the camera frames the duel around it.
+      let threat: THREE.Vector3 | null = null;
+      let near = 9;
+      for (const e of w.liveEnemies()) {
+        const d = e.distTo(w.player);
+        if (d < near && e.targetable && e.arch?.id !== 'dummy') {
+          near = d;
+          threat = this.views.get(e.id)?.char.root.position ?? null;
+        }
+      }
       if (w.mode === 'standoff') {
         const leader = w.get(w.standoff.leaderId);
         if (leader && pv) this.cam.cinematic(focus, this.views.get(leader.id)?.char.root.position ?? focus, 'standoff', 0.2);
       }
       this.trackCinematic();
-      this.cam.update(this.state === 'pause' ? 0 : dt, focus, { aiming: w.player.is('aim'), lockTarget: lockPos, crowd, moveDir: mv, slowmo: w.timeScale < 0.9 });
+      this.cam.update(this.state === 'pause' ? 0 : dt, focus, { aiming: w.player.is('aim'), lockTarget: lockPos, crowd, moveDir: mv, slowmo: w.timeScale < 0.9, threat });
     }
     if (this.debugCam) {
       const c = this.cam.camera;
@@ -393,7 +409,7 @@ export class Game {
     this.sfx.setDrawTension(w.player.is('aim') && ps.draw > 0 ? drawInfo(ps.draw, ps.arrowType).amount : null);
 
     if (this.state !== 'title') this.hud.update(w, this.cam.camera, window.innerWidth, window.innerHeight, dt);
-    this.renderer.render(this.scene, this.cam.camera);
+    this.pixel.render(this.scene, this.cam.camera);
   }
 
   private titleCamera(dt: number): void {
@@ -852,6 +868,10 @@ export class Game {
       case 'kill':
         if (w.liveEnemies().length === 0 && w.mode === 'combat' && this.mode === 'campaign' && !this.cam.inCinematic) this.cam.cinematic(this.at(ev.killer), this.at(ev.victim), 'killcam', 1.3);
         break;
+      case 'cue':
+        // The answer window just opened: a short tick, pitched by the kind of answer it needs.
+        this.play('cue', this.at(ev.id), 1, ev.grade === 'red' ? 0.6 : ev.grade === 'blue' ? 1.25 : 1);
+        break;
       case 'glint':
         this.play(ev.color === 'blue' ? 'glintBlue' : 'glintRed', this.at(ev.id), 1);
         break;
@@ -937,49 +957,27 @@ export class Game {
 }
 
 function makeArrowMesh(pr: Projectile): THREE.Object3D {
+  // Chunky, self-lit box arrows: a projectile must stay readable as a few bright dots.
   const g = new THREE.Group();
+  const part = (w: number, h: number, d: number, color: number, z: number, glow = 0x000000) => {
+    const m = box(w, h, d, toonMat(color, { emissive: glow }));
+    m.position.z = z;
+    g.add(m);
+    return m;
+  };
   if (pr.kind === 'kunai') {
-    const blade = new THREE.Mesh(new THREE.ConeGeometry(0.025, 0.18, 4), new THREE.MeshStandardMaterial({ color: 0x2a2a30, metalness: 0.7, roughness: 0.3 }));
-    blade.rotation.x = Math.PI / 2;
-    g.add(blade);
+    part(0.06, 0.03, 0.2, 0xcfd6de, 0, 0x4a5564);
+    part(0.035, 0.035, 0.08, 0x2c2622, -0.13);
     return g;
   }
-  const shaft = new THREE.Mesh(new THREE.CylinderGeometry(0.007, 0.007, 0.8, 4), new THREE.MeshStandardMaterial({ color: 0xcdbb94, roughness: 0.8 }));
-  shaft.rotation.x = Math.PI / 2;
-  shaft.position.z = -0.4;
-  const headColor = pr.arrowType === 'heavy' ? 0x9aa3ad : pr.arrowType === 'fire' ? 0xff6a1a : 0x6a6f76;
-  const head = new THREE.Mesh(new THREE.ConeGeometry(pr.arrowType === 'heavy' ? 0.022 : 0.014, 0.08, 4), new THREE.MeshStandardMaterial({ color: headColor, metalness: 0.6, roughness: 0.4, emissive: pr.arrowType === 'fire' ? 0xff4400 : 0x000000, emissiveIntensity: 1.5 }));
-  head.rotation.x = Math.PI / 2;
-  head.position.z = 0.02;
-  const fl = new THREE.Mesh(new THREE.BoxGeometry(0.05, 0.002, 0.12), new THREE.MeshStandardMaterial({ color: pr.team === 'player' ? 0xefe6d2 : 0x333333 }));
-  fl.position.z = -0.74;
-  g.add(shaft, head, fl);
-  g.traverse((o) => ((o as THREE.Mesh).castShadow = true));
+  part(0.025, 0.025, 0.8, 0xf0e2bc, -0.4, 0x554a30);
+  const headColor = pr.arrowType === 'heavy' ? 0xcfd6de : pr.arrowType === 'fire' ? 0xff7a2a : 0xaab2bc;
+  const hw = pr.arrowType === 'heavy' ? 0.07 : 0.05;
+  part(hw, hw * 0.6, 0.1, headColor, 0.03, pr.arrowType === 'fire' ? 0xff4400 : 0x30363e);
+  part(0.09, 0.02, 0.14, pr.team === 'player' ? 0xf4eedc : 0x4a4448, -0.74);
   return g;
 }
 
-/** Small golden-hour gradient environment so blades and armor catch the light. */
-function makeSkyReflection(renderer: THREE.WebGLRenderer): THREE.Texture {
-  const scene = new THREE.Scene();
-  const geo = new THREE.SphereGeometry(10, 32, 16);
-  const mat = new THREE.ShaderMaterial({
-    side: THREE.BackSide,
-    vertexShader: 'varying vec3 vP; void main(){ vP = normalize(position); gl_Position = projectionMatrix * modelViewMatrix * vec4(position,1.0); }',
-    fragmentShader: `varying vec3 vP; void main(){
-      float h = vP.y;
-      vec3 top = vec3(0.35, 0.3, 0.55), hor = vec3(1.6, 1.05, 0.7), gnd = vec3(0.18, 0.13, 0.08);
-      vec3 c = h > 0.0 ? mix(hor, top, pow(h, 0.6)) : mix(hor * 0.6, gnd, pow(-h, 0.4));
-      float sun = pow(max(0.0, dot(vP, normalize(vec3(-0.6, 0.25, 0.75)))), 64.0);
-      gl_FragColor = vec4(c + vec3(4.0, 2.8, 1.6) * sun, 1.0); }`,
-  });
-  scene.add(new THREE.Mesh(geo, mat));
-  const pmrem = new THREE.PMREMGenerator(renderer);
-  const tex = pmrem.fromScene(scene, 0.02).texture;
-  pmrem.dispose();
-  geo.dispose();
-  mat.dispose();
-  return tex;
-}
 
 function loadSettings(): Settings {
   try {

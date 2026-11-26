@@ -351,7 +351,7 @@ export function createEnvironment(scene: THREE.Scene, renderer: THREE.WebGLRende
   // PCFSoftShadowMap was removed in three r18x (it now warns + falls back); PCF + radius gives soft edges.
   renderer.shadowMap.type = THREE.PCFShadowMap;
   renderer.toneMapping = THREE.ACESFilmicToneMapping;
-  renderer.toneMappingExposure = 0.95;
+  renderer.toneMappingExposure = 1.12;
   renderer.outputColorSpace = THREE.SRGBColorSpace;
   const fog = new THREE.Fog(C.horizon, 45, 340);
   scene.fog = fog;
