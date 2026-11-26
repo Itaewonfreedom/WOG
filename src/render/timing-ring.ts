@@ -101,7 +101,7 @@ export class TimingRings {
       const lead = T.telegraphLead;
       u.uOpen.value = Math.max(0, tg.left - VISUAL_LEAD) / lead;
       // The drawn window ends at the (shifted) touch and starts where a press begins to work.
-      u.uBand.value = Math.max(0, tg.deflectBand - VISUAL_LEAD / lead);
+      u.uBand.value = Math.max(0, tg.band - VISUAL_LEAD / lead);
       u.uIssen.value = Math.max(0, tg.issenBand - VISUAL_LEAD / lead);
       (u.uColor.value as THREE.Color).copy(COLORS[tg.grade]);
       // Fade in over the first few ticks the ring exists.

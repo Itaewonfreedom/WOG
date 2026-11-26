@@ -49,8 +49,10 @@ const CONTROLS = `
 
 export const SYSTEM_PRIMER = `
 <div class="sub" style="text-align:left;max-width:620px;margin:0 auto 18px">
-<b>튕기기(弾き)</b> — 적의 칼이 닿기 직전 방패를 올려라. 적의 칼이 튕겨나고, 곧바로 공격하면 <b>튕기기 일섬</b>.<br>
-<b>흘리기(流し)</b> — 방패를 든 채 타이밍 맞춰 회피. 빨간 섬광 공격까지 흘려내고 등을 벤다.<br>
+<b>타이밍 링</b> — 적이 공격하면 링이 일정한 속도로 조여든다. <b>링이 안쪽 원에 닿는 순간</b>이 타격이다. 점무늬 띠 안에 들어왔을 때 누르면 된다.<br>
+<b>링 색</b> — 흰색: 막기·튕기기 · <span style="color:#59b8ff">파랑</span>: 튕기기만 · <span style="color:#ff5a48">빨강</span>: 흘리기·회피만 · 링이 없는 동작은 허초(속임수).<br>
+<b>튕기기(弾き)</b> — 링이 닿을 때 방패를 올려라. 적의 칼이 튕겨나고, 곧바로 공격하면 <b>튕기기 일섬</b>.<br>
+<b>흘리기(流し)</b> — 방패를 든 채 링이 닿을 때 회피. 빨간 링 공격까지 흘려내고 등을 벤다.<br>
 <b>일섬(一閃)</b> — 적의 타격 직전, 단 한 번의 공격. 연타하면 나가지 않는다. 이어가면 <b>연쇄 일섬</b>.<br>
 <b>상성</b> — 방패·갑주엔 찌르기, 창·시노비엔 베기. 체간을 무너뜨리면 <b>피니쉬</b>.
 </div>`;
@@ -86,7 +88,7 @@ export class Menus {
       <button class="btn" data-a="title">타이틀로</button></div></div></div>`);
     this.settingsEl = el(`<div class="menu"><div class="box"><h2>설정</h2>
       <div class="settings">
-        <label>난이도 (판정 시간)</label><select data-s="difficulty"><option value="easy">쉬움 — 넉넉한 튕기기·일섬</option><option value="normal">보통</option><option value="hard">어려움 — 칼날 위의 타이밍</option></select>
+        <label>난이도 (판정 시간)</label><select data-s="difficulty"><option value="easy">쉬움 — 더 넓은 띠</option><option value="normal">보통</option><option value="hard">어려움 — 칼날 위의 타이밍</option></select>
         <label>흑백 영화 모드</label><input type="checkbox" data-s="kurosawa">
         <label>피 효과</label><input type="checkbox" data-s="blood">
         <label>그래픽 품질</label><select data-s="quality"><option value="high">높음</option><option value="low">낮음</option></select>

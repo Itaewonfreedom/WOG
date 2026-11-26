@@ -13,7 +13,7 @@ export interface WaveDef {
 }
 
 export const WAVES: WaveDef[] = [
-  { title: '一 · 첫 대면', subtitle: '낭인 검사 — 베기와 찌르기, 튕기기를 익혀라', spawns: [['ronin', 2]], standoff: true },
+  { title: '一 · 첫 대면', subtitle: '낭인 검사 — 링이 닿을 때 방패: 튕기기를 익혀라', spawns: [['ronin', 2]], standoff: true },
   { title: '二 · 방패의 벽', subtitle: '방패 무사 — 베기는 튕겨난다. 찔러라', spawns: [['shield', 2], ['ronin', 1]], standoff: true },
   { title: '三 · 창과 그림자', subtitle: '창병은 베고, 시노비는 넓게 베어라', spawns: [['spear', 2], ['duelist', 1]], standoff: true },
   { title: '四 · 철갑과 활', subtitle: '갑주는 찌르고, 궁수는 활로', spawns: [['armored', 1], ['archer', 2], ['ronin', 1]], standoff: true },

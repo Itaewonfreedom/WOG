@@ -217,7 +217,7 @@ export class Game {
     this.hud.setHelpVisible(true);
     this.helpTimer = 30;
     this.sfx.startAmbience();
-    this.hud.showTip('튕기기', '적의 칼이 닿기 직전 방패를 올려라. 파란 섬광은 튕기기로만, 빨간 섬광은 흘리기(방패+회피)나 회피로 받아낸다.', 9);
+    this.hud.showTip('타이밍 링', '적이 공격하면 링이 조여든다. 링이 안쪽 원에 닿을 때 방패를 올리면 튕기기. 파란 링은 튕기기로만, 빨간 링은 흘리기(방패+회피)나 회피로 받아낸다.', 10);
   }
 
   private resume(): void {
@@ -690,8 +690,8 @@ export class Game {
     const pid = this.world.player.id;
     switch (ev.type) {
       case 'glint':
-        if (ev.color === 'blue') this.lesson('blue', '파란 섬광', '막을 수 없는 공격. 칼이 닿기 직전 방패를 눌러 튕겨내라.');
-        else this.lesson('red', '빨간 섬광', '막을 수도 튕길 수도 없다. 방패를 든 채 회피 = 흘리기, 또는 옆으로 회피.');
+        if (ev.color === 'blue') this.lesson('blue', '파란 링', '막을 수 없는 공격. 링이 안쪽 원에 닿을 때 방패를 눌러 튕겨내라.');
+        else this.lesson('red', '빨간 링', '막을 수도 튕길 수도 없다. 링이 닿을 때 방패를 든 채 회피 = 흘리기, 또는 옆으로 회피.');
         break;
       case 'deflect':
         if (ev.defender === pid && !ev.arrow) this.lesson('hajiki', '튕기기 일섬', '튕겨낸 직후 곧바로 공격하면 반동에 빠진 적을 일격에 벤다.');

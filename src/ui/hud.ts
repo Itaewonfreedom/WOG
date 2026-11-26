@@ -146,7 +146,8 @@ export class Hud {
       <table>
       <tr><td>${k('slash')}</td><td>베기 (누르고 있으면 강베기)</td></tr>
       <tr><td>${k('thrust')}</td><td>찌르기 (누르고 있으면 강찌르기)</td></tr>
-      <tr><td>${k('guard')}</td><td>방패 막기 · <b>타이밍 = 튕기기</b></td></tr>
+      <tr><td>${k('guard')}</td><td>방패 막기 · <b>링이 닿을 때 누르면 튕기기</b></td></tr>
+      <tr><td colspan="2" class="ring-legend"><span class="rl w">○</span> 흰 링 막기·튕기기 <span class="rl b">○</span> 파랑 튕기기만 <span class="rl r">○</span> 빨강 흘리기·회피</td></tr>
       <tr><td>${k('guard')}+${k('dodge')}</td><td><b>흘리기</b> (빨간 공격도)</td></tr>
       <tr><td>${k('guard')}+${k('slash')}</td><td>방패 치기</td></tr>
       <tr><td>적 타격 직전 공격</td><td><b>일섬</b></td></tr>

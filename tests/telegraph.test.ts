@@ -37,7 +37,7 @@ describe('타이밍 링 (telegraph)', () => {
     }
   });
 
-  it('링 색 = 대응법: 일반 흰색, 파랑, 빨강(튕기기 띠 없음) · 허초와 투사체는 링이 없다', () => {
+  it('링 색 = 대응법: 일반 흰색, 파랑, 빨강(띠 = 흘리기 창) · 허초와 투사체는 링이 없다', () => {
     const grade = (id: string) => {
       const { w, d, e } = duel('ronin', 9);
       startEnemyAttack(w, e, getMove(id));
@@ -47,8 +47,8 @@ describe('타이밍 링 (telegraph)', () => {
     expect(grade('ro_cut1')!.grade).toBe('white');
     expect(grade('ro_lunge')!.grade).toBe('blue');
     expect(grade('ar_crush')!.grade).toBe('red');
-    expect(grade('ar_crush')!.deflectBand).toBe(0);
-    expect(grade('ro_cut1')!.deflectBand).toBeCloseTo(T.deflectWindow / T.telegraphLead, 6);
+    expect(grade('ar_crush')!.band).toBeCloseTo(T.flowWindow / T.telegraphLead, 6);
+    expect(grade('ro_cut1')!.band).toBeCloseTo(T.deflectWindow / T.telegraphLead, 6);
     expect(grade('ro_feint')).toBeNull();
     expect(grade('ac_shot')).toBeNull();
   });
@@ -126,5 +126,32 @@ describe('박자 규칙 (attack spacing)', () => {
     for (let i = 1; i < contacts.length; i++) closest = Math.min(closest, contacts[i] - contacts[i - 1]);
     // Follow-ups of one enemy's own string are ≥ 20 + recovery apart; different enemies ≥ spacing.
     expect(closest).toBeGreaterThanOrEqual(T.attackSpacing);
+  });
+});
+
+describe('링 띠 = 실제 판정 창', () => {
+  it('띠에 들어온 틱에 누르면 성공, 띠 밖(더 이른) 틱에 누르면 실패한다 — 흰 링 튕기기 / 빨간 링 흘리기', () => {
+    const run = (id: string, arch: 'ronin' | 'armored', dist: number, early: number) => {
+      const { w, d, e } = duel(arch, dist);
+      const m = getMove(id);
+      startEnemyAttack(w, e, m);
+      const red = m.unblockable === 'red';
+      if (red) d.press('guard'); // flow = buckler held + dodge
+      let pressed = false;
+      for (let i = 0; i < m.startup + 6; i++) {
+        const tg = attackTelegraph(w, e);
+        // Press on the first tick the ring is inside the band (or `early` ticks before that).
+        if (!pressed && tg && tg.open <= tg.band + early / T.telegraphLead + 1e-9) {
+          pressed = true;
+          if (red) d.tap('dodge');
+          else d.press('guard');
+        } else d.tick(1);
+      }
+      return { ok: d.has(red ? 'flow' : 'deflect'), hp: w.player.hp };
+    };
+    expect(run('ro_cut1', 'ronin', 2.2, 0).ok).toBe(true);
+    expect(run('ro_cut1', 'ronin', 2.2, 4).ok).toBe(false);
+    expect(run('ar_crush', 'armored', 2.6, 0).ok).toBe(true);
+    expect(run('ar_crush', 'armored', 2.6, 6).ok).toBe(false);
   });
 });

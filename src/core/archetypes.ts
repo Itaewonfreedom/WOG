@@ -34,7 +34,7 @@ export const ARCHETYPES: Record<ArchetypeId, Archetype> = {
       { move: 'ro_feint', weight: 1, minRange: 0, maxRange: 3.2 },
     ],
     ai: { preferredRange: 2.4, aggression: 0.5, guardChance: 0.35, courage: 0.5, cooldown: [75, 150], comboChance: 0.55, feintChance: 0.15, poise: 3, breakout: 'parry' },
-    tip: '베기·찌르기 모두 통한다. 파란 섬광 공격은 막을 수 없으니 튕기기로 받아내라.',
+    tip: '베기·찌르기 모두 통한다. 파란 링 공격은 막을 수 없으니 튕기기로 받아내라.',
   },
   shield: {
     id: 'shield',
@@ -80,7 +80,7 @@ export const ARCHETYPES: Record<ArchetypeId, Archetype> = {
       { move: 'sp_sweep', weight: 2, minRange: 0, maxRange: 4.0 },
     ],
     ai: { preferredRange: 3.6, aggression: 0.5, guardChance: 0, courage: 0.4, cooldown: [60, 120], comboChance: 0.45, feintChance: 0, poise: 2, breakout: 'backstep' },
-    tip: '찌르기는 긴 창대에 막힌다. 베기로 창대를 쳐내며 파고들어라. 빨간 섬광 휩쓸기는 회피나 흘리기로.',
+    tip: '찌르기는 긴 창대에 막힌다. 베기로 창대를 쳐내며 파고들어라. 빨간 링 휩쓸기는 회피나 흘리기로.',
   },
   armored: {
     id: 'armored',

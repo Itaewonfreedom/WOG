@@ -942,3 +942,18 @@ body.touch-ui .player-panel {
 body.touch-ui #prompt {
   bottom: 40vh;
 }
+
+/* Timing-ring colour legend in the controls help. */
+.ring-legend {
+  text-align: right;
+  font-size: 12px;
+  opacity: 0.9;
+  padding-top: 2px;
+}
+.ring-legend .rl {
+  font-weight: 700;
+  margin-left: 8px;
+}
+.ring-legend .rl.w { color: #fff6e0; }
+.ring-legend .rl.b { color: #59b8ff; }
+.ring-legend .rl.r { color: #ff5a48; }

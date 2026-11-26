@@ -11,8 +11,9 @@ export interface Telegraph {
   left: number;
   /** 1 = ring fully open … 0 = contact. Closes at the same pace for every attack. */
   open: number;
-  /** The part of `open` (0…band) during which a fresh buckler press deflects. */
-  deflectBand: number;
+  /** The part of `open` (0…band) during which the answer works: a fresh buckler press for
+   *  white / blue (튕기기), buckler + dodge for red (흘리기). */
+  band: number;
   /** The part of `open` (0…band) during which starting an attack is an issen. */
   issenBand: number;
 }
@@ -33,7 +34,7 @@ export function attackTelegraph(w: World, f: Fighter, sub = 0, out?: Telegraph):
   t.grade = m.unblockable === 'red' ? 'red' : m.unblockable === 'blue' ? 'blue' : 'white';
   t.left = left;
   t.open = left / T.telegraphLead;
-  t.deflectBand = t.grade === 'red' ? 0 : w.win(T.deflectWindow) / T.telegraphLead;
+  t.band = w.win(t.grade === 'red' ? T.flowWindow : T.deflectWindow) / T.telegraphLead;
   t.issenBand = w.win(T.issenWindow) / T.telegraphLead;
   return t;
 }
