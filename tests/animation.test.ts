@@ -1978,3 +1978,89 @@ describe('리뷰 회귀 6', () => {
     }
   });
 });
+
+// ── 14. Review round 7: 카메라 추적 ───────────────────────────────────────────
+describe('리뷰 회귀 7 (카메라)', () => {
+  const opts = (o: Partial<Parameters<CameraRig['update']>[2]> = {}) => ({ aiming: false, lockTarget: null, crowd: 0, moveDir: null, slowmo: false, ...o });
+  const viewYawOf = (cam: CameraRig) => {
+    const d = new THREE.Vector3();
+    cam.camera.getWorldDirection(d);
+    return Math.atan2(d.x, d.z);
+  };
+  const wrapPi = (a: number) => {
+    while (a > Math.PI) a -= Math.PI * 2;
+    while (a < -Math.PI) a += Math.PI * 2;
+    return a;
+  };
+
+  it('적을 등지고 달아날 때 조작 방향이 뒤의 적 쪽으로 끌려가지 않는다 (전진을 누른 채 계속 멀어진다)', () => {
+    const cam = new CameraRig(16 / 9);
+    cam.reset(0);
+    const player = new THREE.Vector3(0, 0, 0);
+    const enemy = new THREE.Vector3(0.5, 0, -6);
+    let maxHeading = 0;
+    for (let i = 0; i < 240; i++) {
+      cam.update(1 / 60, player, opts({ threat: enemy }));
+      maxHeading = Math.max(maxHeading, Math.abs(wrapPi(cam.yaw)));
+      player.add(new THREE.Vector3(Math.sin(cam.yaw), 0, Math.cos(cam.yaw)).multiplyScalar(4.5 / 60));
+    }
+    expect(maxHeading).toBeLessThan(0.05);
+    expect(player.z).toBeGreaterThan(17);
+    expect(Math.abs(wrapPi(viewYawOf(cam)))).toBeLessThan(0.05); // the picture did not turn either
+  });
+
+  it('추적 대상이 연달아 바뀌어도 화면은 짧은 쪽으로 돈다 (한 바퀴 가까이 휘돌지 않는다)', () => {
+    const cam = new CameraRig(16 / 9);
+    cam.reset(0);
+    const player = new THREE.Vector3(0, 0, 0);
+    const at = (bearing: number) => new THREE.Vector3(Math.sin(bearing) * 4, 0, Math.cos(bearing) * 4);
+    for (let i = 0; i < 300; i++) cam.update(1 / 60, player, opts({ lockTarget: at(0) }));
+    for (let i = 0; i < 20; i++) cam.update(1 / 60, player, opts({ lockTarget: at(2.9) }));
+    let last = viewYawOf(cam);
+    let swept = 0;
+    let path = 0;
+    for (let i = 0; i < 400; i++) {
+      cam.update(1 / 60, player, opts({ lockTarget: at(-0.46) }));
+      const v = viewYawOf(cam);
+      swept += wrapPi(v - last);
+      path += Math.abs(wrapPi(v - last));
+      last = v;
+    }
+    // Settled on the framing of the last target, having turned less than half a turn to get there
+    // (the old catch-up swept 278° the long way round in exactly this sequence).
+    expect(Math.abs(wrapPi(last - (-0.46 + 0.55)))).toBeLessThan(0.05);
+    expect(Math.abs(swept)).toBeLessThan(Math.PI);
+    expect(path).toBeLessThan(3.6);
+  });
+
+  it('락온 없이 활을 들면 보고 있던 화면이 그대로 조준 화면이 된다 (가까운 적 쪽으로 휙 돌지 않는다)', () => {
+    const cam = new CameraRig(16 / 9);
+    cam.reset(0);
+    const player = new THREE.Vector3(0, 0, 0);
+    const enemy = new THREE.Vector3(1, 0, 4);
+    for (let i = 0; i < 300; i++) cam.update(1 / 60, player, opts({ threat: enemy }));
+    const before = viewYawOf(cam);
+    expect(Math.abs(wrapPi(before - cam.yaw))).toBeGreaterThan(0.4); // framed: view ≠ heading
+    let maxStep = 0;
+    let last = before;
+    for (let i = 0; i < 30; i++) {
+      cam.update(1 / 60, player, opts({ threat: enemy, aiming: true }));
+      const v = viewYawOf(cam);
+      maxStep = Math.max(maxStep, Math.abs(wrapPi(v - last)));
+      last = v;
+    }
+    expect(maxStep).toBeLessThan(0.03);
+    expect(Math.abs(wrapPi(last - before))).toBeLessThan(0.1);
+    expect(Math.abs(wrapPi(cam.yaw - last))).toBeLessThan(0.05); // the bow aims along what is on screen
+  });
+
+  it('새 게임: 이전 판의 화면 오프셋이 남지 않는다', () => {
+    const cam = new CameraRig(16 / 9);
+    const player = new THREE.Vector3(0, 0, 0);
+    for (let i = 0; i < 600; i++) cam.update(1 / 60, player, opts({ threat: new THREE.Vector3(0, 0, 4) }));
+    cam.reset(0);
+    cam.update(1 / 60, player, opts());
+    expect(Math.abs(cam.yaw)).toBeLessThan(1e-6);
+    expect(Math.abs(wrapPi(viewYawOf(cam)))).toBeLessThan(0.02);
+  });
+});

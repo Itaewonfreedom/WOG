@@ -11,11 +11,14 @@ export const T = {
   // ── Buckler: 막기 / 튕기기 (Hajiki) ───────────────────────────────
   /** Guard pressed within this many ticks before impact = 튕기기 (perfect deflect). */
   deflectWindow: 12,
-  /** Anti-mash: this many buckler presses within `deflectMashSpan` × the deflect window before a
-   *  blow (with no successful deflect among them) = mashing — that press only blocks. A nervous
-   *  double tap is fine; blind tapping can never cover more than half of the time. */
-  deflectMashPresses: 3,
-  deflectMashSpan: 4,
+  /** Anti-mash "buckler heat": every fresh buckler press adds 1 heat, heat cools by 1 per
+   *  `deflectHeatCool` ticks (or 1.8 deflect windows if that is longer), and any successful
+   *  deflect / flow clears it. A press made while the heat is at `deflectHeatLimit` or more only
+   *  blocks. One press per blow never heats up; a nervous double tap is fine; steady blind
+   *  tapping can cover little more than half of the time before it locks itself out. */
+  deflectHeatCool: 24,
+  deflectHeatLimit: 1.4,
+  deflectHeatMax: 4,
   /** Buckler only covers the front: half-angle in radians (~70°). */
   guardArc: (70 * Math.PI) / 180,
   /** Deflected attacker is stunned this long (weapon knocked away). */

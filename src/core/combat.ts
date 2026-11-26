@@ -208,20 +208,32 @@ export function playerInvulnerable(w: World, p: Fighter): boolean {
   return p.is('finisher', 'issen', 'flow', 'gale', 'dead');
 }
 
-/** Buckler mashing: too many presses lately, none of which deflected anything (see tuning). */
-export function guardMashed(w: World): boolean {
-  const span = T.deflectMashSpan * w.win(T.deflectWindow);
-  const presses = w.buffer.pressesSince('guard', w.tick - span + 1);
-  if (presses.length < T.deflectMashPresses) return false;
-  // A successful deflect since the oldest counted press: chained deflects are not mashing.
-  return w.ps.lastDeflectTick < presses[T.deflectMashPresses - 1];
+/** A fresh buckler press (anti-mash heat, see tuning): is this press too hot to deflect? */
+export function guardPressed(w: World): void {
+  const ps = w.ps;
+  const cool = Math.max(T.deflectHeatCool, w.win(T.deflectWindow) * 1.8);
+  const heat = Math.max(0, ps.guardHeat - (w.tick - ps.guardHeatTick) / cool);
+  ps.guardMashed = heat >= T.deflectHeatLimit;
+  ps.guardHeat = Math.min(T.deflectHeatMax, heat + 1);
+  ps.guardHeatTick = w.tick;
+}
+
+/** The last press was not a deflect attempt after all (shield bash, flow step): take it back. */
+export function guardPressRefund(w: World): void {
+  w.ps.guardHeat = Math.max(0, w.ps.guardHeat - 1);
+}
+
+/** A successful answer with the buckler: the player is timing, not mashing. */
+export function guardHeatClear(w: World): void {
+  w.ps.guardHeat = 0;
+  w.ps.guardMashed = false;
 }
 
 /** Is the player's buckler currently able to deflect? */
 export function deflectReady(w: World, p: Fighter): boolean {
   if (!p.is('guard', 'deflect', 'blockstun')) return false;
   if (w.tick - w.ps.guardStartTick > w.win(T.deflectWindow)) return false;
-  return !guardMashed(w);
+  return !w.ps.guardMashed;
 }
 
 /** 완벽 회피 (Mikiri): the blow comes out within the first few invulnerable ticks of a dodge. */
@@ -312,8 +324,18 @@ function earlyGuard(w: World): { text: string; sub: string } | null {
 export function lateGuardFeedback(w: World, input: InputFrame): void {
   const ps = w.ps;
   if (ps.struckTick < 0 || !input.pressed.guard) return;
-  if (w.tick - ps.struckTick <= 10 && w.player.alive) w.emit({ type: 'text', text: '늦었다', sub: '링이 닿기 전에', style: 'bad', id: w.player.id });
+  const recent = w.tick - ps.struckTick <= 10 && w.player.alive;
   ps.struckTick = -9999;
+  if (!recent) return;
+  // Not late if this press can still answer the NEXT blow that is already on its way.
+  const reach = w.win(T.deflectWindow) + T.inputBuffer;
+  for (const f of w.fighters) {
+    const m = f.act.move;
+    if (f.team !== 'enemy' || !f.alive || f.act.kind !== 'attack' || !m || m.feint || m.projectile) continue;
+    const left = m.startup - f.act.t;
+    if (left > 0 && left <= reach) return;
+  }
+  w.emit({ type: 'text', text: '늦었다', sub: '링이 닿기 전에', style: 'bad', id: w.player.id });
 }
 
 export function damagePlayer(w: World, att: Fighter, p: Fighter, damage: number, heavy: boolean): void {
@@ -372,6 +394,7 @@ export function doDeflect(w: World, p: Fighter, att: Fighter): void {
   ps.riposteTarget = att.id;
   ps.riposteUntil = w.tick + T.riposteWindow;
   ps.lastDeflectTick = w.tick;
+  guardHeatClear(w);
   w.stats.deflects++;
   w.gainResolve(T.resolveGain.deflect);
   w.freeze(HITSTOP.deflect);
@@ -383,6 +406,7 @@ export function doDeflect(w: World, p: Fighter, att: Fighter): void {
 /** 흘리기 (Nagashi): slide off the blow; attacker stumbles past with its back exposed. */
 export function doFlow(w: World, p: Fighter, att: Fighter, side: -1 | 1): void {
   const ps = w.ps;
+  guardHeatClear(w);
   const pr = rightOf(p.yaw);
   const to = add(p.pos, add(scale(pr, side * T.flowSideStep), scale(p.forward(), 0.2)));
   p.set('flow', T.flowAnimDur, { targetId: att.id, from: { ...p.pos }, to, travel: 8, side });

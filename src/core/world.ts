@@ -50,6 +50,11 @@ export interface PlayerState {
   lastPerfectDodgeTick: number;
   /** Tick of the last successful deflect (chain deflects are exempt from the spam penalty). */
   lastDeflectTick: number;
+  /** Anti-mash buckler heat (see tuning) as of `guardHeatTick`, and whether the press that
+   *  raised the buckler was made too hot to deflect. */
+  guardHeat: number;
+  guardHeatTick: number;
+  guardMashed: boolean;
   /** Tick a blow got past an unraised buckler (for the "늦었다" timing feedback; -9999 = none). */
   struckTick: number;
 }
@@ -158,6 +163,9 @@ export class World {
       lastPerfectDodgeTick: -9999,
       lastDeflectTick: -9999,
       struckTick: -9999,
+      guardHeat: 0,
+      guardHeatTick: 0,
+      guardMashed: false,
     };
     this.standoff = new Standoff();
   }

@@ -215,3 +215,86 @@ function enemyStart(w: World, e: import('../src/core/fighter').Fighter, id: stri
   startEnemyAttack(w, e, m);
   return m.startup;
 }
+
+describe('리뷰 회귀 7 (코어)', () => {
+  it('화살을 튕긴 직후의 더블 탭도 연타가 아니다 (성공한 방어는 방패 열을 식힌다)', () => {
+    const { w, d, e } = duel('ronin', 2.2);
+    // Heat the buckler a little, then succeed once: the heat is gone.
+    d.tap('guard');
+    d.tick(3);
+    d.tap('guard');
+    expect(w.ps.guardHeat).toBeGreaterThan(1);
+    const s0 = enemyStart(w, e, 'ro_cut2');
+    d.tick(s0 - 8);
+    d.tick(20); // (blocked or hit — no matter)
+    w.ps.guardHeat = 2;
+    w.ps.guardHeatTick = w.tick;
+    // A successful deflect clears it …
+    d.tick(40);
+    w.ps.guardHeat = 1.2;
+    w.ps.guardHeatTick = w.tick;
+    const s1 = enemyStart(w, e, 'ro_cut2');
+    d.tick(s1 - 5);
+    d.press('guard');
+    d.tick(8);
+    expect(d.has('deflect')).toBe(true);
+    expect(w.ps.guardHeat).toBe(0);
+    d.release('guard');
+    // … so a double tap for the very next blow deflects.
+    d.tick(30);
+    const s2 = enemyStart(w, e, 'ro_cut2');
+    d.tick(s2 - 16);
+    d.tap('guard');
+    d.tick(6);
+    d.press('guard');
+    d.tick(10);
+    expect(d.count('deflect')).toBe(2);
+    expect(d.texts()).not.toContain('방패 연타');
+  });
+
+  it('맞은 직후의 방패가 이미 오고 있는 다음 타격을 받아낼 수 있으면 "늦었다"고 하지 않는다 (쉬움)', () => {
+    const { w, d, e } = duel('duelist', 2.0);
+    w.settings.windowScale = 1.6;
+    const first = getMove('du_f1');
+    startEnemyAttack(w, e, first);
+    for (let i = 0; i < first.startup + 2 && !d.has('hit'); i++) d.step();
+    expect(d.has('hit')).toBe(true);
+    while (w.hitstop > 0) d.step();
+    // The follow-up is already on its way and lands within the (easy) deflect window of this press.
+    startEnemyAttack(w, e, getMove('du_f2'));
+    d.tick(getMove('du_f2').startup - 18);
+    d.step(['guard']);
+    expect(d.texts()).not.toContain('늦었다');
+  });
+
+  it('박자 규칙: 튕겨져 반동 중인 적의 타격 뒤에도 다음 적의 타격은 26틱 이상 떨어진다 (발동 24틱 공격)', () => {
+    const { w, d, e } = duel('ronin', 2.2);
+    const e2 = w.spawn('duelist', { x: 1.5, z: 2 }, Math.PI);
+    e2.brain!.aware = false;
+    e2.brain!.cooldown = 99999;
+    const first = getMove('ro_cut1');
+    const fast = getMove('du_f1');
+    startEnemyAttack(w, e, first);
+    d.tick(first.startup - 6);
+    d.press('guard');
+    let contactTick = -1;
+    let startedTick = -1;
+    for (let i = 0; i < 60 && startedTick < 0; i++) {
+      d.tick(1);
+      if (contactTick < 0 && d.has('deflect')) contactTick = w.tick;
+      // Ask exactly as the AI does (before this tick's actions advance): try to start it now.
+      if (contactTick >= 0 && contactClear(w, e2, fast)) {
+        startEnemyAttack(w, e2, fast);
+        startedTick = w.tick;
+      }
+    }
+    expect(contactTick).toBeGreaterThan(0);
+    expect(e.act.kind).not.toBe('attack'); // the first attacker is in recoil: only the record remains
+    let landed = -1;
+    for (let i = 0; i < fast.startup + 4 && landed < 0; i++) {
+      d.tick(1);
+      if (e2.act.kind === 'attack' && e2.act.t === fast.startup) landed = w.tick;
+    }
+    expect(landed - contactTick).toBeGreaterThanOrEqual(T.attackSpacing);
+  });
+});

@@ -61,8 +61,6 @@ export class InputBuffer {
   readonly pressTick = new Map<Button, number>();
   /** Press tick before the most recent one (used for anti-mash checks). */
   readonly prevPressTick = new Map<Button, number>();
-  /** The last few press ticks per button, most recent first (used for anti-mash checks). */
-  private readonly history = new Map<Button, number[]>();
 
   record(frame: InputFrame, tick: number): void {
     for (const k of Object.keys(frame.pressed) as Button[]) {
@@ -70,16 +68,7 @@ export class InputBuffer {
       this.last.set(k, tick);
       this.prevPressTick.set(k, this.pressTick.get(k) ?? -9999);
       this.pressTick.set(k, tick);
-      const h = this.history.get(k) ?? [];
-      h.unshift(tick);
-      if (h.length > 6) h.length = 6;
-      this.history.set(k, h);
     }
-  }
-
-  /** Press ticks of `b` at or after `since`, most recent first. */
-  pressesSince(b: Button, since: number): number[] {
-    return (this.history.get(b) ?? []).filter((t) => t >= since);
   }
 
   /** True if `b` was pressed within `window` ticks and has not been consumed yet. */

@@ -13,7 +13,7 @@ import { getMove, PLAYER_HEAVY, PLAYER_OPENERS } from './moves';
 import { T } from './tuning';
 import type { ArrowType, MoveDef } from './types';
 import type { World } from './world';
-import { doIssen, findFinisherTarget, GALE_SEG, rightOf, startFinisher } from './combat';
+import { doIssen, findFinisherTarget, GALE_SEG, guardPressed, guardPressRefund, rightOf, startFinisher } from './combat';
 import { fireArrow } from './bow';
 
 type AtkBtn = 'slash' | 'thrust';
@@ -84,6 +84,7 @@ export function updatePlayer(w: World, inp: InputFrame): void {
         if (g !== null) {
           ps.prevGuardStartTick = ps.guardStartTick;
           ps.guardStartTick = g;
+          guardPressed(w);
         }
       }
       if (tryFinisherOrCounter(w, p)) return;
@@ -93,8 +94,11 @@ export function updatePlayer(w: World, inp: InputFrame): void {
         locomotion(w, p, inp, T.runSpeed);
         return;
       }
-      if (buf.consume('dodge', tick, B)) return startFlowStep(p, inp);
-      if (buf.consume('slash', tick, B)) return startAttack(w, p, inp, getMove('r_bash'), 'slash', false);
+      if (buf.consume('dodge', tick, B)) return startFlowStep(w, p, inp);
+      if (buf.consume('slash', tick, B)) {
+        guardPressRefund(w); // the press was a shield bash, not a deflect attempt
+        return startAttack(w, p, inp, getMove('r_bash'), 'slash', false);
+      }
       if (buf.peek('thrust', tick, B)) {
         buf.consume('thrust', tick, B);
         return startAttack(w, p, inp, getMove(PLAYER_OPENERS.thrust), 'thrust', true);
@@ -412,6 +416,8 @@ function raiseGuard(w: World, p: Fighter, pressTick: number | null): void {
   const ps = w.ps;
   ps.prevGuardStartTick = ps.guardStartTick;
   ps.guardStartTick = pressTick ?? -9999;
+  if (pressTick !== null) guardPressed(w);
+  else ps.guardMashed = false;
   p.set('guard', Infinity);
 }
 
@@ -423,7 +429,8 @@ function startDodge(w: World, p: Fighter, inp: InputFrame): void {
 }
 
 /** 흘리기 input: guard held + dodge. Side comes from the stick (default: right). */
-function startFlowStep(p: Fighter, inp: InputFrame): void {
+function startFlowStep(w: World, p: Fighter, inp: InputFrame): void {
+  guardPressRefund(w); // a flow attempt is its own timing test, not buckler mashing
   const r = rightOf(p.yaw);
   const lateral = inp.move.x * r.x + inp.move.z * r.z;
   const side: -1 | 1 = lateral < -0.2 ? -1 : 1;

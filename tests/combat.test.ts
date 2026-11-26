@@ -1,4 +1,6 @@
 import { describe, expect, it } from 'vitest';
+import { startEnemyAttack } from '../src/core/ai';
+import { getMove } from '../src/core/moves';
 import { duel, enemyAttack, Driver } from './helpers';
 import { T } from '../src/core/tuning';
 import { World } from '../src/core/world';
@@ -137,30 +139,88 @@ describe('튕기기 (Hajiki)', () => {
     expect(d.has('deflect')).toBe(true);
   });
 
-  it('리듬 없이 방패만 두드려서는 절반도 튕기지 못한다 (어떤 연타 주기든, 쉬움 난이도 포함)', () => {
+  it('리듬 없이 방패만 계속 두드려서는 절반 남짓밖에 튕기지 못한다 (어떤 주기든, 쉬움 난이도 포함)', () => {
     for (const scale of [1, 1.6]) {
-      for (const period of [4, 6, 8, 10, 14, 18, 24, 30]) {
+      for (const period of [4, 6, 8, 10, 14, 18, 22, 24, 27, 30, 35, 40]) {
         let deflects = 0;
         const trials = 30;
         for (let phase = 0; phase < trials; phase++) {
           const { w, d, e } = duel('ronin', 2.2);
           w.settings.windowScale = scale;
           w.settings.invincible = true;
-          // Blind tapping at a fixed period (press one tick, release the next), the attack
-          // arriving at an arbitrary phase.
+          // Sustained blind tapping at a fixed period (press one tick, release the next); the
+          // attack arrives at an arbitrary phase once the tapping has gone on for a while.
           const tapStep = (i: number) => {
             if (i % period === 0) d.press('guard');
             else if (i % period === 1 || period === 1) d.release('guard');
             else d.step();
           };
-          for (let i = 0; i < 60 + phase; i++) tapStep(i);
+          const warm = 600 + phase;
+          for (let i = 0; i < warm; i++) tapStep(i);
           const s = enemyAttack(w, e, 'ro_cut2');
-          for (let i = 60 + phase; i < 60 + phase + s + 6; i++) tapStep(i);
+          for (let i = warm; i < warm + s + 6; i++) tapStep(i);
           if (d.has('deflect')) deflects++;
         }
-        expect(deflects / trials, `scale ${scale} period ${period}`).toBeLessThanOrEqual(0.55);
+        // (Easy mode's wider window lets a slow steady tap cover a little more.)
+        expect(deflects / trials, `scale ${scale} period ${period}`).toBeLessThanOrEqual(scale > 1 ? 0.66 : 0.6);
       }
     }
+  });
+
+  it('타격마다 한 번씩 누르는 방패는 계속 실패해도 연타가 아니다 (쉬움 난이도, 3연타 끝을 제때 누르면 튕긴다)', () => {
+    for (const scale of [1, 1.6]) {
+      const { w, d, e } = duel('duelist', 2.0);
+      w.settings.windowScale = scale;
+      w.settings.invincible = true;
+      // Three blows 27 ticks apart; the first two presses are 3 ticks late, the third is on time.
+      let contact = enemyAttack(w, e, 'du_f1');
+      let now = 0;
+      const until = (t: number) => {
+        while (now < t) {
+          d.step();
+          if (w.hitstop === 0) now++;
+        }
+      };
+      for (const id of ['du_f1', 'du_f2', 'du_f3'] as const) {
+        if (id !== 'du_f1') {
+          until(contact + 5);
+          startEnemyAttack(w, e, getMove(id));
+          contact = now + getMove(id).startup;
+        }
+        if (id === 'du_f3') {
+          until(contact - 6);
+          d.press('guard');
+          now++;
+        } else {
+          until(contact + 3);
+          d.tap('guard');
+          now += 2;
+        }
+      }
+      until(contact + 4);
+      expect(d.texts(), `scale ${scale}`).not.toContain('방패 연타');
+      expect(d.has('deflect'), `scale ${scale}`).toBe(true);
+    }
+  });
+
+  it('방패 치기에 쓴 방패 입력은 연타로 세지 않는다 (치기 두 번 뒤의 정확한 방패는 튕긴다)', () => {
+    const { w, d, e } = duel('ronin', 2.2);
+    e.hp = e.maxHp = 9999;
+    e.maxPosture = 9999;
+    for (let k = 0; k < 2; k++) {
+      d.press('guard');
+      d.tap('slash'); // shield bash
+      d.release('guard');
+      d.tick(22);
+    }
+    expect(d.events.filter((ev) => ev.type === 'swing').length).toBeGreaterThanOrEqual(2);
+    d.tick(30);
+    const s = enemyAttack(w, e, 'ro_cut2');
+    d.tick(s - 6);
+    d.press('guard');
+    d.tick(8);
+    expect(d.texts()).not.toContain('방패 연타');
+    expect(d.has('deflect')).toBe(true);
   });
 
   it('침착한 한 번의 방패는 타격 12틱 전에 눌러도 튕긴다 (넉넉한 판정)', () => {

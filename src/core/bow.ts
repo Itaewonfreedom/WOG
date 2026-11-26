@@ -13,7 +13,7 @@ import { lerp, toYaw } from './math';
 import { DT, HITSTOP, T } from './tuning';
 import type { ArrowType, MoveDef, Projectile } from './types';
 import type { World } from './world';
-import { applyHitToEnemy, damagePlayer, deflectReady, playerInvulnerable } from './combat';
+import { applyHitToEnemy, damagePlayer, deflectReady, guardHeatClear, playerInvulnerable } from './combat';
 
 const v3 = (x: number, y: number, z: number): Vec3 => ({ x, y, z });
 const v3add = (a: Vec3, b: Vec3): Vec3 => v3(a.x + b.x, a.y + b.y, a.z + b.z);
@@ -245,6 +245,7 @@ function resolveOnPlayerProjectile(w: World, pr: Projectile, p: Fighter, pt: Vec
   if (p.is('guard', 'deflect', 'blockstun') && frontal) {
     pr.alive = false;
     if (deflectReady(w, p)) {
+      guardHeatClear(w);
       w.stats.deflects++;
       w.gainResolve(T.resolveGain.deflect * 0.5);
       w.freeze(HITSTOP.block);

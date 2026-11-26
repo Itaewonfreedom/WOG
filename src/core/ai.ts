@@ -55,7 +55,8 @@ export function contactClear(w: World, e: Fighter, m: MoveDef): boolean {
   if (m.feint || m.projectile) return true;
   // The blow that landed last (its attacker may already be in recoil / hit-stun).
   const last = w.lastEnemyContact;
-  if (last.id !== e.id && w.tick + m.startup - last.tick < T.attackSpacing) return false;
+  // (Started now, the blow lands on tick + startup − 1: the action advances in this same step.)
+  if (last.id !== e.id && w.tick + m.startup - 1 - last.tick < T.attackSpacing) return false;
   for (const f of w.fighters) {
     if (f === e || f.team !== 'enemy' || !f.alive || f.act.kind !== 'attack') continue;
     const o = f.act.move;

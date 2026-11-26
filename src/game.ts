@@ -15,7 +15,7 @@ import { box, toonMat } from './render/voxel';
 import { Animator, actionTime } from './render/anim';
 import type { Landing } from './render/feet';
 import { trailSpec, type TrailSpec } from './render/trail-spec';
-import { CameraRig, COMBAT_PITCH } from './render/camera';
+import { CameraRig } from './render/camera';
 import { PixelPipeline } from './render/pixel';
 import { TimingRings } from './render/timing-ring';
 import { Decals, makeGlintTexture, Puffs, Rings, Sparks, SwordTrail } from './render/fx';
@@ -208,9 +208,7 @@ export class Game {
       d.brain!.aware = false;
       this.hud.showWave('수련장', '왼쪽 버튼으로 적을 불러내 연습하라', 3);
     }
-    this.cam.yaw = 0;
-    this.cam.pitch = COMBAT_PITCH;
-    this.cam.endCinematic();
+    this.cam.reset(0);
     this.state = 'play';
     this.resultTimer = -1;
     this.menus.hide();
